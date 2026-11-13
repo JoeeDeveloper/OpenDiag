@@ -59,6 +59,51 @@ fn probe_reports_missing_port_and_rejects_bad_address() {
 }
 
 #[test]
+fn kw1281_simulated_scan_and_dtc_read() {
+    let (ok, out, err) = run(&["scan", "--simulate-kw1281"], "");
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("DEMO-KW-0001") && out.contains("VIRTUAL ENGINE ECU"),
+        "{out}"
+    );
+
+    let (ok, out, err) = run(&["dtc", "read", "--simulate-kw1281"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("00525") && out.contains("00017"), "{out}");
+}
+
+#[test]
+fn kw1281_simulated_clear_needs_confirmation() {
+    let (ok, out, _) = run(&["dtc", "clear", "--simulate-kw1281"], "no\n");
+    assert!(ok);
+    assert!(
+        out.contains("Cancelled") && !out.contains("Cleared"),
+        "{out}"
+    );
+
+    let (ok, out, err) = run(&["dtc", "clear", "--simulate-kw1281", "--yes"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("Cleared 2 trouble code(s)"), "{out}");
+}
+
+#[test]
+fn hardware_without_slow_init_explains_what_is_supported() {
+    let (ok, _, err) = run(&["scan", "--port", "COM9"], "");
+    assert!(!ok);
+    assert!(err.contains("--slow-init"), "{err}");
+}
+
+#[test]
+fn slow_init_scan_reports_missing_port() {
+    let (ok, _, err) = run(
+        &["scan", "--port", "NOPE-DOES-NOT-EXIST", "--slow-init"],
+        "",
+    );
+    assert!(!ok);
+    assert!(err.contains("cannot open"), "{err}");
+}
+
+#[test]
 fn slow_init_probe_reports_missing_port() {
     let (ok, _, err) = run(
         &["probe", "--port", "NOPE-DOES-NOT-EXIST", "--slow-init"],

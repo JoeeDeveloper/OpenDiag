@@ -5,8 +5,8 @@ use clap::{Args, Parser, Subcommand};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig};
-use opendiag_services::demo::{virtual_uds_client, VirtualClient, TESTER_ID};
-use opendiag_services::{clear_dtcs, identify, read_dtcs, ClearConfirmation, DtcReport};
+use opendiag_services::demo::{virtual_kw1281_module, virtual_uds_client, TESTER_ID};
+use opendiag_services::{ClearConfirmation, DtcReport, Kw1281Module, Module};
 use opendiag_transport::{list_serial_ports, KLineSerial};
 
 /// Open source VAG group diagnostic tool.
@@ -70,9 +70,27 @@ enum DtcCmd {
 
 #[derive(Args)]
 struct Target {
-    /// Use the built-in virtual ECU instead of hardware (no car needed).
+    /// Use the built-in virtual UDS ECU (no car needed).
     #[arg(long)]
     simulate: bool,
+    /// Use the built-in virtual KW1281 module (no car needed).
+    #[arg(long)]
+    simulate_kw1281: bool,
+    /// Serial port of a K-line cable, e.g. COM3 or /dev/ttyUSB0 (see `opendiag ports`).
+    #[arg(long)]
+    port: Option<String>,
+    /// With --port: use 5-baud slow init and the KW1281 protocol (older modules).
+    #[arg(long)]
+    slow_init: bool,
+    /// Module address in hex, e.g. 0x01 for the engine ECU.
+    #[arg(long, default_value = "0x01", value_parser = parse_hex_u8)]
+    address: u8,
+    /// Serial baud rate.
+    #[arg(long, default_value_t = 10400)]
+    baud: u32,
+    /// The cable does not echo transmitted bytes.
+    #[arg(long)]
+    no_echo: bool,
 }
 
 fn main() -> ExitCode {
@@ -127,7 +145,6 @@ fn ports() -> Result<(), String> {
     Ok(())
 }
 
-/// Read-only handshake with one module over a K-line cable.
 /// Read-only KW1281 session: 5-baud init, identification, fault codes, then end.
 fn probe_kw1281(port: &str, address: u8, baud: u32, echo: bool) -> Result<(), String> {
     let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
@@ -157,6 +174,7 @@ fn probe_kw1281(port: &str, address: u8, baud: u32, echo: bool) -> Result<(), St
     Ok(())
 }
 
+/// Read-only handshake with one module over a K-line cable (fast init, KWP2000).
 fn probe(port: &str, address: u8, baud: u32) -> Result<(), String> {
     let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
     let mut kwp = KwpClient::new(transport, KwpConfig::new(address));
@@ -176,24 +194,59 @@ fn probe(port: &str, address: u8, baud: u32) -> Result<(), String> {
     Ok(())
 }
 
-type Uds = VirtualClient;
-
-/// Hardware drivers do not exist yet, so only the virtual ECU can be opened.
-fn connect(target: &Target) -> Result<Uds, String> {
-    if !target.simulate {
-        return Err("no hardware drivers yet; pass --simulate to use the virtual ECU".into());
+/// Open whichever module the flags select. Only K-line KW1281 hardware is wired up so far.
+fn connect(target: &Target) -> Result<Box<dyn Module>, String> {
+    if target.simulate {
+        eprintln!("[simulated] virtual UDS ECU, tester id {TESTER_ID:#05X}");
+        return Ok(Box::new(virtual_uds_client()));
     }
-    eprintln!("[simulated] virtual ECU, tester id {TESTER_ID:#05X}");
-    Ok(virtual_uds_client())
+    if target.simulate_kw1281 {
+        eprintln!("[simulated] virtual KW1281 module");
+        return Ok(Box::new(
+            virtual_kw1281_module().map_err(|e| e.to_string())?,
+        ));
+    }
+    let Some(port) = &target.port else {
+        return Err(
+            "no connection chosen: pass --simulate, --simulate-kw1281, or --port <PORT> --slow-init"
+                .into(),
+        );
+    };
+    if !target.slow_init {
+        return Err(
+            "only KW1281 (older modules) is wired up for hardware so far: add --slow-init. \
+             KWP2000 and UDS over hardware are not connected to scan/dtc yet"
+                .into(),
+        );
+    }
+    let transport = KLineSerial::open(port, target.baud).map_err(|e| e.to_string())?;
+    let cfg = Kw1281Config {
+        echo: !target.no_echo,
+        ..Kw1281Config::default()
+    };
+    let client = Kw1281Client::new(transport, SystemClock::new(), cfg);
+    eprintln!(
+        "5-baud slow init to module {:#04X} on {port} at {} baud (about 2 s)...",
+        target.address, target.baud
+    );
+    Ok(Box::new(
+        Kw1281Module::connect(client, target.address).map_err(|e| e.to_string())?,
+    ))
 }
 
 fn scan(target: &Target) -> Result<(), String> {
-    let mut uds = connect(target)?;
-    let ident = identify(&mut uds).map_err(|e| e.to_string())?;
+    let mut module = connect(target)?;
+    let ident = module.identify().map_err(|e| e.to_string())?;
     let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not supported)".into());
     println!("Part number      : {}", show(&ident.part_number));
-    println!("Software version : {}", show(&ident.software_version));
-    println!("VIN              : {}", show(&ident.vin));
+    // KW1281 modules report free-form lines instead of the standard items.
+    if ident.lines.is_empty() {
+        println!("Software version : {}", show(&ident.software_version));
+        println!("VIN              : {}", show(&ident.vin));
+    }
+    for line in ident.lines.iter().skip(1) {
+        println!("Ident            : {line}");
+    }
     Ok(())
 }
 
@@ -213,14 +266,14 @@ fn print_dtcs(dtcs: &[DtcReport]) {
 }
 
 fn dtc_read(target: &Target) -> Result<(), String> {
-    let mut uds = connect(target)?;
-    print_dtcs(&read_dtcs(&mut uds).map_err(|e| e.to_string())?);
+    let mut module = connect(target)?;
+    print_dtcs(&module.read_dtcs().map_err(|e| e.to_string())?);
     Ok(())
 }
 
 fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
-    let mut uds = connect(target)?;
-    let stored = read_dtcs(&mut uds).map_err(|e| e.to_string())?;
+    let mut module = connect(target)?;
+    let stored = module.read_dtcs().map_err(|e| e.to_string())?;
     if stored.is_empty() {
         println!("No trouble codes stored; nothing to clear.");
         return Ok(());
@@ -231,8 +284,9 @@ fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
         println!("Cancelled; nothing was changed.");
         return Ok(());
     }
-    let cleared =
-        clear_dtcs(&mut uds, &ClearConfirmation::confirmed_by_user()).map_err(|e| e.to_string())?;
+    let cleared = module
+        .clear_dtcs(&ClearConfirmation::confirmed_by_user())
+        .map_err(|e| e.to_string())?;
     println!(
         "Cleared {} trouble code(s). Record of what was stored:",
         cleared.len()

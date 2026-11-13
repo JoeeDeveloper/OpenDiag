@@ -1,9 +1,35 @@
 //! A scripted virtual ECU for demos and tests. Not a model of any real module.
 
+use opendiag_core::Result;
 use opendiag_proto::clock::FakeClock;
 use opendiag_proto::isotp::{Config, IsoTpFrame, IsoTpLink};
+use opendiag_proto::kw1281::sim::Kw1281Sim;
+use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_transport::{Frame, Simulator};
+
+use crate::Kw1281Module;
+
+/// A virtual KW1281 module with made-up ident text and two fault codes.
+pub fn virtual_kw1281_bus() -> Kw1281Sim {
+    Kw1281Sim::new()
+        .ident_line("DEMO-KW-0001")
+        .ident_line("VIRTUAL ENGINE ECU")
+        .fault(525, 0x20)
+        .fault(17, 0x01)
+}
+
+/// The virtual KW1281 module with its session already open.
+pub type VirtualKw1281 = Kw1281Module<Kw1281Sim, FakeClock>;
+
+pub fn virtual_kw1281_module() -> Result<VirtualKw1281> {
+    let client = Kw1281Client::new(
+        virtual_kw1281_bus(),
+        FakeClock::new(),
+        Kw1281Config::default(),
+    );
+    Kw1281Module::connect(client, 0x01)
+}
 
 pub const TESTER_ID: u32 = 0x7E0;
 pub const ECU_ID: u32 = 0x7E8;

@@ -4,6 +4,9 @@
 //! confirmation token and a record of what was cleared.
 
 pub mod demo;
+mod kw1281_module;
+
+pub use kw1281_module::Kw1281Module;
 
 use opendiag_core::{Error, Result, WriteMode};
 use opendiag_proto::uds::UdsClient;
@@ -21,6 +24,8 @@ pub struct Ident {
     pub part_number: Option<String>,
     pub software_version: Option<String>,
     pub vin: Option<String>,
+    /// Protocol-specific extra text lines (KW1281 modules report free-form ident lines).
+    pub lines: Vec<String>,
 }
 
 /// A trouble code ready for display.
@@ -97,7 +102,32 @@ pub fn identify<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>) -> Result<Ide
         part_number: text_did(uds, DID_PART_NUMBER)?,
         software_version: text_did(uds, DID_SOFTWARE_VERSION)?,
         vin: text_did(uds, DID_VIN)?,
+        lines: Vec::new(),
     })
+}
+
+/// A connected diagnostic module, whatever protocol it speaks. Front ends
+/// (CLI, later the GUI) work against this so they need no protocol knowledge.
+pub trait Module {
+    fn identify(&mut self) -> Result<Ident>;
+    fn read_dtcs(&mut self) -> Result<Vec<DtcReport>>;
+    /// Clear all DTCs. Needs a [`ClearConfirmation`]; returns the codes stored
+    /// beforehand so the caller can keep a record.
+    fn clear_dtcs(&mut self, confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>>;
+}
+
+impl<T: Transport, C: Clock> Module for UdsClient<T, C> {
+    fn identify(&mut self) -> Result<Ident> {
+        identify(self)
+    }
+
+    fn read_dtcs(&mut self) -> Result<Vec<DtcReport>> {
+        read_dtcs(self)
+    }
+
+    fn clear_dtcs(&mut self, confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>> {
+        clear_dtcs(self, confirmation)
+    }
 }
 
 /// Read every stored DTC (status mask 0xFF).
