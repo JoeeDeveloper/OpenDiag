@@ -1,6 +1,8 @@
 use opendiag_core::WriteMode;
 use opendiag_services::demo::virtual_kw1281_module;
-use opendiag_services::{ClearConfirmation, Module};
+use opendiag_services::{
+    apply_clear, plan_clear, BackupStatus, BackupStore, ClearConfirmation, Module,
+};
 
 #[test]
 fn identify_uses_ident_lines_with_part_number_first() {
@@ -25,12 +27,24 @@ fn reads_faults_as_five_digit_codes_with_raw_status() {
 }
 
 #[test]
-fn clear_records_previous_codes_and_relocks() {
+fn guarded_clear_snapshots_clears_verifies_and_relocks() {
+    let path = std::env::temp_dir().join(format!("opendiag-km-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let store = BackupStore::new(&path);
+
     let mut m = virtual_kw1281_module().unwrap();
-    let before = m
-        .clear_dtcs(&ClearConfirmation::confirmed_by_user())
-        .unwrap();
-    assert_eq!(before.len(), 2);
+    let shown = plan_clear(m.faults()).unwrap();
+    assert_eq!(shown.len(), 2);
+    let outcome = apply_clear(
+        m.faults(),
+        &store,
+        &shown,
+        &ClearConfirmation::for_codes(&shown),
+    )
+    .unwrap();
+
+    assert_eq!(outcome.cleared.len(), 2);
+    assert!(outcome.remaining.is_empty());
     assert!(
         m.read_dtcs().unwrap().is_empty(),
         "module reports no faults now"
@@ -38,6 +52,13 @@ fn clear_records_previous_codes_and_relocks() {
     assert!(m.client().transport().cleared());
     assert_eq!(m.client().write_mode(), WriteMode::ReadOnly);
     assert!(m.client().transport().violations().is_empty());
+
+    let rec = store.get(&outcome.backup_id).unwrap().unwrap();
+    assert_eq!(rec.kind, "dtc_clear");
+    assert_eq!(rec.status, BackupStatus::Verified);
+    assert_eq!(rec.codes, vec!["00525 status 0x20", "00017 status 0x01"]);
+    assert_eq!(rec.note.as_deref(), Some("KW1281 module 0x01"));
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

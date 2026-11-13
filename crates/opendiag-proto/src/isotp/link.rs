@@ -28,6 +28,11 @@ impl<T: Transport, C: Clock> IsoTpLink<T, C> {
         }
     }
 
+    /// CAN id requests are sent on.
+    pub fn tx_id(&self) -> u32 {
+        self.tx_id
+    }
+
     pub fn transport(&self) -> &T {
         &self.transport
     }

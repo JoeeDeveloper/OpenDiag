@@ -48,6 +48,10 @@ pub struct BackupRecord {
     pub note: Option<String>,
     /// Set when this change was itself a restore of another record.
     pub restores: Option<String>,
+    /// For `dtc_clear` records: the fault codes (with status) stored before they
+    /// were cleared. Absent in older records.
+    #[serde(default)]
+    pub codes: Vec<String>,
 }
 
 fn io(e: impl std::fmt::Display) -> Error {
@@ -131,8 +135,7 @@ impl BackupStore {
         f.sync_all().map_err(io)
     }
 
-    /// Record the old value and the intended change, durably, status `planned`.
-    pub fn plan(&self, new: NewBackup) -> Result<BackupRecord> {
+    fn next_id(&self) -> Result<String> {
         let next = self
             .records()?
             .iter()
@@ -140,11 +143,20 @@ impl BackupStore {
             .max()
             .unwrap_or(0)
             + 1;
+        Ok(format!("b{next:04}"))
+    }
+
+    fn now_unix() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+
+    /// Record the old value and the intended change, durably, status `planned`.
+    pub fn plan(&self, new: NewBackup) -> Result<BackupRecord> {
         let rec = BackupRecord {
-            id: format!("b{next:04}"),
-            created_unix: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
+            id: self.next_id()?,
+            created_unix: Self::now_unix(),
             protocol: new.protocol,
             module_address: new.module_address,
             kind: new.kind,
@@ -154,6 +166,35 @@ impl BackupStore {
             status: BackupStatus::Planned,
             note: None,
             restores: new.restores,
+            codes: Vec::new(),
+        };
+        self.append(&rec)?;
+        Ok(rec)
+    }
+
+    /// Record the fault codes stored in a module, durably, just before they are
+    /// cleared. Clearing cannot be undone, so this is a snapshot, not a restore point.
+    /// `module_address` is 0 for protocols without one (UDS); `note` says which module.
+    pub fn plan_clear(
+        &self,
+        protocol: &str,
+        module_address: u8,
+        note: String,
+        codes: Vec<String>,
+    ) -> Result<BackupRecord> {
+        let rec = BackupRecord {
+            id: self.next_id()?,
+            created_unix: Self::now_unix(),
+            protocol: protocol.to_string(),
+            module_address,
+            kind: "dtc_clear".to_string(),
+            channel: 0,
+            old_value: 0,
+            new_value: 0,
+            status: BackupStatus::Planned,
+            note: Some(note),
+            restores: None,
+            codes,
         };
         self.append(&rec)?;
         Ok(rec)

@@ -1,9 +1,9 @@
-use opendiag_core::{Error, WriteMode};
+use opendiag_core::Error;
 use opendiag_proto::clock::FakeClock;
 use opendiag_proto::isotp::{Config, IsoTpLink};
 use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_services::demo::{virtual_uds_client, ECU_ID, TESTER_ID};
-use opendiag_services::{clear_dtcs, identify, read_dtcs, ClearConfirmation};
+use opendiag_services::{identify, read_dtcs};
 use opendiag_transport::{Frame, Simulator};
 
 fn client(sim: Simulator) -> UdsClient<Simulator, FakeClock> {
@@ -63,31 +63,4 @@ fn reads_and_formats_dtcs() {
     assert_eq!(dtcs[0].text, "P0171-00");
     assert_eq!(dtcs[0].flags, vec!["testFailed", "confirmed"]);
     assert_eq!(dtcs[1].text, "P0300-00");
-}
-
-#[test]
-fn clear_returns_previous_codes_and_relocks_writes() {
-    let mut uds = virtual_uds_client();
-    assert_eq!(uds.write_mode(), WriteMode::ReadOnly);
-    let cleared = clear_dtcs(&mut uds, &ClearConfirmation::confirmed_by_user()).unwrap();
-    assert_eq!(
-        cleared.len(),
-        2,
-        "record of what was stored before clearing"
-    );
-    assert_eq!(uds.write_mode(), WriteMode::ReadOnly, "relocked afterwards");
-}
-
-#[test]
-fn clear_relocks_even_when_the_ecu_refuses() {
-    let sim = Simulator::new()
-        .on(req(&[0x19, 0x02, 0xFF]), rsp(&[0x59, 0x02, 0xFF]))
-        .on(req(&[0x14, 0xFF, 0xFF, 0xFF]), rsp(&[0x7F, 0x14, 0x22]));
-    let mut uds = client(sim);
-    let err = clear_dtcs(&mut uds, &ClearConfirmation::confirmed_by_user()).unwrap_err();
-    assert!(
-        matches!(err, Error::NegativeResponse { nrc: 0x22, .. }),
-        "{err}"
-    );
-    assert_eq!(uds.write_mode(), WriteMode::ReadOnly);
 }

@@ -1,8 +1,15 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// Where commands that write a backup go unless a test says otherwise, so a test
+/// that forgets `--backup-file` can never leave a file in the repository.
+fn default_backup_file() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("opendiag-cli-default-{}.jsonl", std::process::id()))
+}
+
 fn run(args: &[&str], stdin: &str) -> (bool, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .env("OPENDIAG_BACKUPS", default_backup_file())
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -73,17 +80,46 @@ fn kw1281_simulated_scan_and_dtc_read() {
 }
 
 #[test]
-fn kw1281_simulated_clear_needs_confirmation() {
-    let (ok, out, _) = run(&["dtc", "clear", "--simulate-kw1281"], "no\n");
-    assert!(ok);
+fn kw1281_simulated_clear_snapshots_clears_and_reports_what_the_module_says() {
+    let bk = temp_file("kw-clear.jsonl");
+    let _ = std::fs::remove_file(&bk);
+    let (ok, out, err) = run(
+        &[
+            "dtc",
+            "clear",
+            "--simulate-kw1281",
+            "--backup-file",
+            bk.to_str().unwrap(),
+        ],
+        "YES\n",
+    );
+    assert!(ok, "{err}");
     assert!(
-        out.contains("Cancelled") && !out.contains("Cleared"),
+        out.contains("cannot be undone") && out.contains("snapshot"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Cleared 2 trouble code(s). Snapshot b0001"),
+        "{out}"
+    );
+    assert!(
+        out.contains("The module now reports no trouble codes"),
         "{out}"
     );
 
-    let (ok, out, err) = run(&["dtc", "clear", "--simulate-kw1281", "--yes"], "");
-    assert!(ok, "{err}");
-    assert!(out.contains("Cleared 2 trouble code(s)"), "{out}");
+    let (ok, listing, _) = run(
+        &["backup", "list", "--backup-file", bk.to_str().unwrap()],
+        "",
+    );
+    std::fs::remove_file(&bk).unwrap();
+    assert!(ok);
+    assert!(
+        listing.contains("b0001")
+            && listing.contains("fault codes cleared (2 stored)")
+            && listing.contains("was: 00525 status 0x20")
+            && listing.contains("Verified"),
+        "{listing}"
+    );
 }
 
 #[test]
@@ -631,23 +667,88 @@ fn hardware_mode_is_refused_for_now() {
 }
 
 #[test]
-fn clear_without_confirmation_changes_nothing() {
-    let (ok, out, _) = run(&["dtc", "clear", "--simulate"], "no\n");
-    assert!(ok);
-    assert!(out.contains("Cancelled"), "{out}");
-    assert!(!out.contains("Cleared"), "{out}");
+fn clear_without_confirmation_changes_nothing_and_writes_no_snapshot() {
+    let bk = temp_file("cancel-clear.jsonl");
+    let _ = std::fs::remove_file(&bk);
+    for answer in ["no\n", "\n", "yes\n", "y\n", ""] {
+        for sim in ["--simulate", "--simulate-kw1281"] {
+            let (ok, out, _) = run(
+                &["dtc", "clear", sim, "--backup-file", bk.to_str().unwrap()],
+                answer,
+            );
+            assert!(ok);
+            assert!(
+                out.contains("Cancelled") && !out.contains("Cleared"),
+                "{sim} {answer:?}: {out}"
+            );
+            assert!(
+                !bk.exists(),
+                "a cancelled clear must not write a snapshot ({sim} {answer:?})"
+            );
+        }
+    }
 }
 
 #[test]
-fn clear_with_confirmation_clears_and_reports() {
-    let (ok, out, _) = run(&["dtc", "clear", "--simulate"], "YES\n");
-    assert!(ok);
+fn clear_on_a_module_whose_fault_is_active_says_so_instead_of_claiming_success() {
+    // The virtual UDS ECU keeps reporting its codes after a clear, like an active fault.
+    let bk = temp_file("uds-clear.jsonl");
+    let _ = std::fs::remove_file(&bk);
+    let (ok, out, err) = run(
+        &[
+            "dtc",
+            "clear",
+            "--simulate",
+            "--backup-file",
+            bk.to_str().unwrap(),
+        ],
+        "YES\n",
+    );
+    let (_, listing, _) = run(
+        &["backup", "list", "--backup-file", bk.to_str().unwrap()],
+        "",
+    );
+    std::fs::remove_file(&bk).unwrap();
+    assert!(ok, "{err}");
     assert!(out.contains("Cleared 2 trouble code(s)"), "{out}");
+    assert!(
+        out.contains("still reported") && !out.contains("now reports no trouble codes"),
+        "{out}"
+    );
+    assert!(
+        listing.contains("VerificationFailed") && listing.contains("still reported after clearing"),
+        "{listing}"
+    );
 }
 
 #[test]
-fn clear_with_yes_flag_skips_prompt() {
-    let (ok, out, _) = run(&["dtc", "clear", "--simulate", "--yes"], "");
-    assert!(ok);
-    assert!(out.contains("Cleared 2"), "{out}");
+fn clear_has_no_yes_flag() {
+    let (ok, _, err) = run(&["dtc", "clear", "--simulate", "--yes"], "");
+    assert!(!ok && err.contains("--yes"), "{err}");
+}
+
+#[test]
+fn a_clear_snapshot_cannot_be_restored() {
+    let bk = temp_file("norestore.jsonl");
+    let _ = std::fs::remove_file(&bk);
+    let b = bk.to_str().unwrap();
+    run(
+        &["dtc", "clear", "--simulate-kw1281", "--backup-file", b],
+        "YES\n",
+    );
+    let (ok, _, err) = run(
+        &[
+            "backup",
+            "restore",
+            "b0001",
+            "--simulate-kw1281",
+            "--workshop-code",
+            "0",
+            "--backup-file",
+            b,
+        ],
+        "YES\n",
+    );
+    std::fs::remove_file(&bk).unwrap();
+    assert!(!ok && err.contains("cannot be written back"), "{err}");
 }

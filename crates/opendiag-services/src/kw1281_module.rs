@@ -5,7 +5,7 @@ use opendiag_proto::clock::Clock;
 use opendiag_proto::kw1281::{Fault, Kw1281Client, RawMeasurement};
 use opendiag_transport::Transport;
 
-use crate::{AdaptationAccess, ClearConfirmation, DtcReport, Ident, LiveData, Module, WriteToken};
+use crate::{AdaptationAccess, DtcReport, FaultAccess, Ident, LiveData, Module, WriteToken};
 
 /// A KW1281 module with an open session. The session is ended when this is dropped.
 pub struct Kw1281Module<T: Transport, C: Clock> {
@@ -67,10 +67,8 @@ impl<T: Transport, C: Clock> Module for Kw1281Module<T, C> {
         Ok(self.client.read_fault_codes()?.iter().map(report).collect())
     }
 
-    fn clear_dtcs(&mut self, _confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>> {
-        let before = self.read_dtcs()?;
-        self.with_unlocked(|c| c.clear_fault_codes())?;
-        Ok(before)
+    fn faults(&mut self) -> &mut dyn FaultAccess {
+        self
     }
 
     fn live(&mut self) -> Option<&mut dyn LiveData> {
@@ -79,6 +77,29 @@ impl<T: Transport, C: Clock> Module for Kw1281Module<T, C> {
 
     fn adaptation(&mut self) -> Option<&mut dyn AdaptationAccess> {
         Some(self)
+    }
+}
+
+impl<T: Transport, C: Clock> FaultAccess for Kw1281Module<T, C> {
+    fn protocol(&self) -> &'static str {
+        "kw1281"
+    }
+
+    fn module_address(&self) -> u8 {
+        self.address
+    }
+
+    fn describe(&self) -> String {
+        format!("KW1281 module {:#04X}", self.address)
+    }
+
+    fn read(&mut self) -> Result<Vec<DtcReport>> {
+        Module::read_dtcs(self)
+    }
+
+    fn clear(&mut self, _token: &WriteToken) -> Result<()> {
+        // The faults the module still reports afterwards are re-read by the caller.
+        self.with_unlocked(|c| c.clear_fault_codes()).map(|_| ())
     }
 }
 

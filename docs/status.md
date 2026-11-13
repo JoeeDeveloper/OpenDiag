@@ -29,11 +29,13 @@ Last reviewed 2026-11-13. This is deliberately blunt.
 
 ## Known weaknesses
 
-- **Write safety is enforced for adaptation changes, still convention for clearing codes.** Adaptation writes
-  go through a guarded flow (confirmation bound to the exact diff, durable backup before sending, read-back
-  verification, restore command) and cannot be called around it ([safety.md](safety.md)). `dtc clear` is still
-  lighter: `WriteMode` can be flipped by any caller and `ClearConfirmation::confirmed_by_user()` is public.
-  Short/long coding is not implemented, so nothing else writes.
+- **Both writes go through a guarded flow** ([safety.md](safety.md)): adaptation changes and fault-code clearing
+  need a confirmation bound to the exact change shown, take a durable backup/snapshot *before* anything is sent,
+  verify by reading back, and cannot be called around it (the module-level write functions need a token only the
+  flow can create). There is no `--yes` bypass on either. Two honest limits: the protocol-level methods
+  (`Kw1281Client::clear_fault_codes` and friends) are still public for tests and tools, each gated by `WriteMode`;
+  and the guard is only as good as its tests, which are simulator-based. Short/long coding is not implemented,
+  so nothing else writes.
 - **The adaptation save reply format is unconfirmed**, so success is decided by reading the value back. Nothing
   about adaptation has run against a real module.
 - **Capture/trace tooling is new and itself unverified on hardware.** `--trace` and `opendiag capture` exist

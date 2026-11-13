@@ -23,7 +23,7 @@ cargo run -p opendiag-cli -- log --simulate-kw1281 --groups 1,2 --samples 4 --in
 
 ## Safety
 
-- Read-only by default. Writes are limited to clearing trouble codes and KW1281 adaptation changes. Adaptation changes always take a durable backup first, need a typed confirmation of the exact diff (no `--yes`), and are verified by reading back; see [docs/safety.md](docs/safety.md). Nothing flashes or reprograms.
+- Read-only by default. Writes are limited to clearing trouble codes and KW1281 adaptation changes. Both take a durable backup or snapshot first, need a typed confirmation of the exact change shown (there is no `--yes`), and are verified by reading back; see [docs/safety.md](docs/safety.md). Nothing flashes or reprograms.
 - Clean-room: no proprietary data. See [docs/legal.md](docs/legal.md) and [docs/sources.md](docs/sources.md).
 - Roadmap: [PROJECT_PLAN.md](PROJECT_PLAN.md).
 

@@ -1,11 +1,12 @@
 //! High-level diagnostic services on top of the protocol layer.
 //!
-//! Currently UDS only: identification, DTC read, and DTC clear with a mandatory
-//! confirmation token and a record of what was cleared.
+//! Identification, DTC read, live data, and the guarded writes (adaptation
+//! changes and fault-code clearing), over UDS and KW1281 modules.
 
 pub mod adaptation;
 pub mod backup;
 pub mod demo;
+pub mod fault_clear;
 mod kw1281_module;
 pub mod live;
 
@@ -14,6 +15,7 @@ pub use adaptation::{
     WriteConfirmation, WriteToken,
 };
 pub use backup::{BackupRecord, BackupStatus, BackupStore};
+pub use fault_clear::{apply_clear, plan_clear, ClearConfirmation, ClearOutcome, FaultAccess};
 pub use kw1281_module::Kw1281Module;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
 
@@ -120,9 +122,8 @@ pub fn identify<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>) -> Result<Ide
 pub trait Module {
     fn identify(&mut self) -> Result<Ident>;
     fn read_dtcs(&mut self) -> Result<Vec<DtcReport>>;
-    /// Clear all DTCs. Needs a [`ClearConfirmation`]; returns the codes stored
-    /// beforehand so the caller can keep a record.
-    fn clear_dtcs(&mut self, confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>>;
+    /// Fault-code access, including the guarded clear ([`plan_clear`] / [`apply_clear`]).
+    fn faults(&mut self) -> &mut dyn FaultAccess;
 
     /// Live measuring data, if this kind of module supports it (KW1281 only so far).
     fn live(&mut self) -> Option<&mut dyn LiveData> {
@@ -144,8 +145,34 @@ impl<T: Transport, C: Clock> Module for UdsClient<T, C> {
         read_dtcs(self)
     }
 
-    fn clear_dtcs(&mut self, confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>> {
-        clear_dtcs(self, confirmation)
+    fn faults(&mut self) -> &mut dyn FaultAccess {
+        self
+    }
+}
+
+impl<T: Transport, C: Clock> FaultAccess for UdsClient<T, C> {
+    fn protocol(&self) -> &'static str {
+        "uds"
+    }
+
+    fn module_address(&self) -> u8 {
+        0 // UDS modules are addressed by CAN id, not a diagnostic address
+    }
+
+    fn describe(&self) -> String {
+        format!("UDS ECU (request id {:#05X})", self.link().tx_id())
+    }
+
+    fn read(&mut self) -> Result<Vec<DtcReport>> {
+        read_dtcs(self)
+    }
+
+    fn clear(&mut self, _token: &WriteToken) -> Result<()> {
+        let previous = self.write_mode();
+        self.set_write_mode(WriteMode::Unlocked);
+        let result = self.clear_dtcs(0xFF_FFFF);
+        self.set_write_mode(previous);
+        result
     }
 }
 
@@ -156,33 +183,6 @@ pub fn read_dtcs<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>) -> Result<Ve
         .into_iter()
         .map(DtcReport::from)
         .collect())
-}
-
-/// Proof that a person agreed to clear codes. Only front ends should create one,
-/// after showing the user what will be cleared.
-#[derive(Debug)]
-pub struct ClearConfirmation(());
-
-impl ClearConfirmation {
-    pub fn confirmed_by_user() -> Self {
-        Self(())
-    }
-}
-
-/// Clear all DTCs. Unlocks writes only for the duration of the call, always
-/// restores the previous mode, and returns the codes that were stored beforehand
-/// so the caller can keep a record.
-pub fn clear_dtcs<T: Transport, C: Clock>(
-    uds: &mut UdsClient<T, C>,
-    _confirmation: &ClearConfirmation,
-) -> Result<Vec<DtcReport>> {
-    let before = read_dtcs(uds)?;
-    let previous = uds.write_mode();
-    uds.set_write_mode(WriteMode::Unlocked);
-    let result = uds.clear_dtcs(0xFF_FFFF);
-    uds.set_write_mode(previous);
-    result?;
-    Ok(before)
 }
 
 #[cfg(test)]

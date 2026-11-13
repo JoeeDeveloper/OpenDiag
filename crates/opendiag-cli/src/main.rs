@@ -14,8 +14,9 @@ use opendiag_services::demo::{
     TESTER_ID,
 };
 use opendiag_services::{
-    apply_change, apply_restore, log_csv, plan_change, plan_restore, BackupStore,
-    ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module, WriteConfirmation,
+    apply_change, apply_clear, apply_restore, log_csv, plan_change, plan_clear, plan_restore,
+    BackupStore, ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module,
+    WriteConfirmation,
 };
 use opendiag_transport::{
     list_serial_ports, open_can, KLineSerial, TraceStatus, Tracing, Transport,
@@ -195,13 +196,13 @@ enum DataCmd {
 enum DtcCmd {
     /// List stored trouble codes (read-only).
     Read(Target),
-    /// Clear all stored trouble codes. Asks for confirmation.
+    /// Clear all stored trouble codes. Saves a snapshot of them first, asks you to
+    /// confirm exactly what was shown, then checks what the module reports. There is no --yes.
     Clear {
         #[command(flatten)]
         target: Target,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
-        yes: bool,
+        #[command(flatten)]
+        store: StoreArg,
     },
 }
 
@@ -248,8 +249,8 @@ fn main() -> ExitCode {
             action: DtcCmd::Read(t),
         }) => dtc_read(&t),
         Some(Cmd::Dtc {
-            action: DtcCmd::Clear { target, yes },
-        }) => dtc_clear(&target, yes),
+            action: DtcCmd::Clear { target, store },
+        }) => dtc_clear(&target, &store),
         Some(Cmd::Adaptation {
             action: AdaptationCmd::Read { target, channel },
         }) => adaptation_read(&target, channel),
@@ -667,18 +668,32 @@ fn backup_list(store: &StoreArg) -> Result<(), String> {
             .as_ref()
             .map(|id| format!(" (restores {id})"))
             .unwrap_or_default();
-        println!(
-            "{}  {} UTC  {} module {:#04X} {} channel {}: {} -> {}  [{:?}]{restore}",
-            r.id,
-            format_unix(r.created_unix),
-            r.protocol,
-            r.module_address,
-            r.kind,
-            r.channel,
-            r.old_value,
-            r.new_value,
-            r.status
-        );
+        if r.kind == "dtc_clear" {
+            println!(
+                "{}  {} UTC  {} fault codes cleared ({} stored)  [{:?}]",
+                r.id,
+                format_unix(r.created_unix),
+                r.protocol,
+                r.codes.len(),
+                r.status
+            );
+            for c in &r.codes {
+                println!("      was: {c}");
+            }
+        } else {
+            println!(
+                "{}  {} UTC  {} module {:#04X} {} channel {}: {} -> {}  [{:?}]{restore}",
+                r.id,
+                format_unix(r.created_unix),
+                r.protocol,
+                r.module_address,
+                r.kind,
+                r.channel,
+                r.old_value,
+                r.new_value,
+                r.status
+            );
+        }
         if let Some(note) = &r.note {
             println!("      note: {note}");
         }
@@ -841,29 +856,43 @@ fn dtc_read(target: &Target) -> Result<(), String> {
     Ok(())
 }
 
-fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
+fn dtc_clear(target: &Target, store: &StoreArg) -> Result<(), String> {
+    let store = backup_store(store);
     let mut conn = connect(target)?;
     let data = load_data();
-    let stored = conn.module.read_dtcs().map_err(|e| e.to_string())?;
-    if stored.is_empty() {
+    let access = conn.module.faults();
+    let shown = plan_clear(access).map_err(|e| e.to_string())?;
+    if shown.is_empty() {
         println!("No trouble codes stored; nothing to clear.");
         return Ok(());
     }
-    println!("About to clear {} trouble code(s):", stored.len());
-    print_dtcs(&stored, data.as_ref());
-    if !yes && !confirm()? {
+    println!("About to clear {} trouble code(s):", shown.len());
+    print_dtcs(&shown, data.as_ref());
+    println!(
+        "Clearing erases these codes and their status for good and cannot be undone. A snapshot of them is saved to {} first.",
+        store.path().display()
+    );
+    if !confirm()? {
         println!("Cancelled; nothing was changed.");
         return Ok(());
     }
-    let cleared = conn
-        .module
-        .clear_dtcs(&ClearConfirmation::confirmed_by_user())
-        .map_err(|e| e.to_string())?;
+    let confirmation = ClearConfirmation::for_codes(&shown);
+    let outcome = apply_clear(access, &store, &shown, &confirmation).map_err(|e| e.to_string())?;
     println!(
-        "Cleared {} trouble code(s). Record of what was stored:",
-        cleared.len()
+        "Cleared {} trouble code(s). Snapshot {} is in {}.",
+        outcome.cleared.len(),
+        outcome.backup_id,
+        store.path().display()
     );
-    print_dtcs(&cleared, data.as_ref());
+    if outcome.remaining.is_empty() {
+        println!("The module now reports no trouble codes.");
+    } else {
+        println!(
+            "Note: {} code(s) are still reported (active faults come straight back):",
+            outcome.remaining.len()
+        );
+        print_dtcs(&outcome.remaining, data.as_ref());
+    }
     Ok(())
 }
 

@@ -23,7 +23,7 @@ use crate::backup::{BackupStatus, BackupStore, NewBackup};
 pub struct WriteToken(());
 
 impl WriteToken {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(())
     }
 }
@@ -195,6 +195,11 @@ pub fn plan_restore(
             store.path().display()
         ))
     })?;
+    if record.kind == "dtc_clear" {
+        return Err(protocol(format!(
+            "backup {id} is a snapshot of cleared fault codes; those cannot be written back"
+        )));
+    }
     if record.kind != "adaptation" || record.protocol != access.protocol() {
         return Err(protocol(format!(
             "backup {id} is a {} {} change, which this connection cannot restore",
