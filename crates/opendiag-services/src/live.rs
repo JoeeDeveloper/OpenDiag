@@ -80,8 +80,8 @@ where
         rows: 0,
     };
     let mut tick: u32 = 0;
-    loop {
-        let scheduled = cfg.interval * tick;
+    // A schedule too far out to represent is the end of any real log.
+    while let Some(scheduled) = cfg.interval.checked_mul(tick) {
         match cfg.limit {
             Limit::Samples(n) if summary.samples >= n => break,
             Limit::Duration(d) if scheduled >= d => break,
@@ -110,8 +110,10 @@ where
 
         // Next grid point after "now"; never fire missed rounds back to back.
         let elapsed = clock.now() - start;
-        let after_now = (elapsed.as_nanos() / cfg.interval.as_nanos()) as u32 + 1;
-        tick = (tick + 1).max(after_now);
+        let after_now = u32::try_from(elapsed.as_nanos() / cfg.interval.as_nanos())
+            .unwrap_or(u32::MAX)
+            .saturating_add(1);
+        tick = tick.saturating_add(1).max(after_now);
     }
     Ok(summary)
 }

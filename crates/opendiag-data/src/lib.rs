@@ -18,6 +18,10 @@ pub use model::{
 };
 pub use validate::validate;
 
+/// Largest data file accepted. Real files are a few kilobytes; the cap stops a
+/// stray or hostile file from being read into memory.
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
 /// One problem in one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Issue {
@@ -161,6 +165,18 @@ pub fn load_dir(dir: &Path) -> Result<DataSet, Vec<Issue>> {
             .display()
             .to_string()
             .replace('\\', "/");
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.len() > MAX_FILE_BYTES {
+                issues.push(issue(
+                    &name,
+                    format!(
+                        "file is {} bytes; the limit is {MAX_FILE_BYTES}",
+                        meta.len()
+                    ),
+                ));
+                continue;
+            }
+        }
         let text = match fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {

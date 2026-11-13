@@ -80,6 +80,10 @@ fn provenance(p: &Provenance, errs: &mut Vec<String>) {
         }
         _ => {}
     }
+    check_plain("provenance.author", &p.author, false, errs);
+    if let Some(n) = &p.notes {
+        check_plain("provenance.notes", n, true, errs);
+    }
     for (field, text) in [("author", Some(&p.author)), ("notes", p.notes.as_ref())] {
         if let Some(bad) = text.and_then(|t| mentions_proprietary_source(t)) {
             errs.push(format!(
@@ -90,7 +94,20 @@ fn provenance(p: &Provenance, errs: &mut Vec<String>) {
     }
 }
 
+/// Reject control characters. Data strings are printed to terminals, so an
+/// escape sequence in a description could rewrite the screen or fake output.
+/// `allow_newline` lets free-form notes span lines.
+fn check_plain(what: &str, text: &str, allow_newline: bool, errs: &mut Vec<String>) {
+    if text
+        .chars()
+        .any(|c| c.is_control() && !(allow_newline && c == '\n'))
+    {
+        errs.push(format!("{what} contains control characters"));
+    }
+}
+
 fn check_text(what: &str, text: &str, errs: &mut Vec<String>) {
+    check_plain(what, text, false, errs);
     if text.trim().is_empty() {
         errs.push(format!("{what} must not be empty"));
     } else if text.chars().count() > MAX_DESCRIPTION {
@@ -109,6 +126,9 @@ fn modules(entries: &[ModuleDef], errs: &mut Vec<String>) {
         check_text(&format!("module {:#04X} name", m.address), &m.name, errs);
         if let Some(d) = &m.description {
             check_text(&format!("module {:#04X} description", m.address), d, errs);
+        }
+        for p in &m.platforms {
+            check_text(&format!("module {:#04X} platform", m.address), p, errs);
         }
     }
 }
@@ -170,6 +190,13 @@ fn blocks(entries: &[BlockDef], errs: &mut Vec<String>) {
                 &c.label,
                 errs,
             );
+            if let Some(u) = &c.unit {
+                check_text(
+                    &format!("measuring block {id} cell {} unit", i + 1),
+                    u,
+                    errs,
+                );
+            }
         }
     }
 }

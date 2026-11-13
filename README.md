@@ -2,14 +2,29 @@
 
 An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi, Seat, Skoda): a VCDS alternative on commodity hardware.
 
-**Status:** Phase 0 (foundations). Nothing talks to a car yet.
+**Status: early, simulator-tested, never run against a real car.** The protocol stack, a CLI and an open data format exist and pass ~180 automated tests, but every test uses a simulator or a published capture. Read [docs/status.md](docs/status.md) before connecting anything to a vehicle.
 
-- Read-only by default. Writes need an explicit unlock, a backup and a confirmation.
-- Clean-room: no proprietary data. See [docs/legal.md](docs/legal.md).
-- Roadmap: [PROJECT_PLAN.md](PROJECT_PLAN.md).
+## What works today
+
+| Area | State |
+|---|---|
+| Protocols | ISO-TP, UDS, KWP2000 (K-line), KW1281 (5-baud init), TP2.0, all against simulators |
+| Transports | Serial K-line (Windows/Linux/macOS), SocketCAN (Linux), Simulator, Replay |
+| CLI | `scan`, `dtc read/clear`, `log` (live data to CSV), `probe`, `ports`, `data validate/schema` |
+| Data | Open YAML format with validator and generated JSON Schema (CC0-1.0) |
+
+Try it without a car:
 
 ```bash
-cargo run -p opendiag-cli -- --version
+cargo run -p opendiag-cli -- scan --simulate-kw1281
+cargo run -p opendiag-cli -- dtc read --simulate
+cargo run -p opendiag-cli -- log --simulate-kw1281 --groups 1,2 --samples 4 --interval-ms 100
 ```
 
-Licensed under GPL-3.0-or-later. See [CONTRIBUTING.md](CONTRIBUTING.md).
+## Safety
+
+- Read-only by default. Clearing trouble codes is the only write, behind a typed confirmation, and nothing flashes or reprograms.
+- Clean-room: no proprietary data. See [docs/legal.md](docs/legal.md) and [docs/sources.md](docs/sources.md).
+- Roadmap: [PROJECT_PLAN.md](PROJECT_PLAN.md).
+
+Code is GPL-3.0-or-later; contributed data is CC0-1.0. See [CONTRIBUTING.md](CONTRIBUTING.md).

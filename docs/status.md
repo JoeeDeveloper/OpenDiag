@@ -1,0 +1,62 @@
+# Status: what is verified and what is not
+
+Last reviewed 2026-11-13. This is deliberately blunt.
+
+## What the tests prove
+
+~180 automated tests pass on Windows, Ubuntu and macOS CI. They prove the code does what its authors
+*understood the protocols to be*, against:
+
+- simulators written by the same authors from the same documents (so a shared misunderstanding passes);
+- one published TP2.0 capture, replayed byte for byte;
+- robustness runs (random bytes into every decoder, ~1,250 corrupted sessions through every client)
+  that found no panics or hangs.
+
+## What nothing has proved
+
+**No part of this has ever talked to a real module.** In particular:
+
+- **KW1281** timing (`ack_delay` 2 ms, `block_gap` 25 ms) is a placeholder. Real modules may need different
+  values, and a known real-world quirk (a repeated sync byte mid-session) is not handled.
+- **5-baud init** timing through a Windows USB serial driver is untested; break pulses can jitter.
+- **TP2.0** follows reverse-engineered community notes. Two interpretations beyond them are ours: the module's
+  T3 is the gap we leave between our packets, and its block size is how many we send before waiting for an ACK.
+  The client errors (rather than guesses) if a module sends data before acknowledging ours.
+- **KWP2000 / UDS** services follow the ISO structure, not captures of VAG modules; VAG-specific behaviour
+  (response codes, session numbers, identification options) will differ.
+- **SocketCAN** has compiled and passed unit tests on CI but has never opened a real interface.
+- **Cable setup** (DTR high / RTS low) is copied from another tool's behaviour, untested here.
+
+## Known weaknesses
+
+- **Write safety is convention, not enforcement.** `WriteMode` can be flipped by any caller and
+  `ClearConfirmation::confirmed_by_user()` is public. Today only "clear fault codes" is wired as a write, and
+  only the CLI constructs the confirmation, after a typed `YES` (or `--yes`). There is **no backup/restore
+  mechanism yet**, which must exist before coding or adaptation writes are added.
+- **No raw capture/trace tool.** The plan's `opendiag capture` is not built, so a failed hardware session
+  leaves no byte-level record to debug from. Build this first.
+- Fault status bytes and measuring-block formulas are shown raw; there is no decoding data yet.
+- KWP2000 services are implemented twice (K-line and TP2.0); KW1281 has no desync recovery.
+- `Drop` on a dead link can block for one byte timeout (~1 s) while it tries to end the session.
+- `serde_yaml` is unmaintained upstream; plan a migration. YAML alias expansion was measured and is bounded.
+- CI: the macOS runner sometimes fails to start (capacity), unrelated to the code. `main` has no branch
+  protection or required checks.
+
+## Not started (from the plan)
+
+J2534 and ELM327 transports, PCAN, `opendiag capture`, coding/adaptation/output tests, backup/restore,
+the Tauri GUI, packaging/signing, vehicle profiles, mdBook docs, WASM plugins.
+
+## First hardware session: a safe checklist
+
+Use a **bench module** (out of the car, powered from a 12 V supply, K-line wired to the cable) or a car with
+the ignition on and engine off. Read-only steps only.
+
+1. `opendiag ports`: confirm the cable appears. Note the port name.
+2. `opendiag probe --port <PORT> --address 0x01 --slow-init` (a module that never answers is normal at
+   first; try `--baud 9600`, then `--no-echo`).
+3. If that connects: `opendiag scan --port <PORT> --slow-init`, then `opendiag dtc read ...`, then
+   `opendiag log --groups 1 --samples 5 ...`.
+4. **Do not run `dtc clear` until reads are proven reliable** on that module.
+5. Save the exact command, the full output, and the adapter model. A failure with those is useful;
+   without them it cannot be debugged.

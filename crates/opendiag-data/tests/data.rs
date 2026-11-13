@@ -109,6 +109,62 @@ fn rejects_structural_problems() {
 }
 
 #[test]
+fn control_characters_are_rejected_everywhere_text_is_shown() {
+    // YAML "\e" is the ESC character; "\n" a newline inside a quoted scalar.
+    let esc = "\"red \\e[31m\"";
+    assert!(
+        first_error(&modules(&format!("  - {{ address: 1, name: {esc} }}\n")))
+            .contains("control characters")
+    );
+    assert!(first_error(&modules(&format!(
+        "  - {{ address: 1, name: X, description: {esc} }}\n"
+    )))
+    .contains("control characters"));
+    assert!(first_error(&modules(&format!(
+        "  - {{ address: 1, name: X, platforms: [{esc}] }}\n"
+    )))
+    .contains("control characters"));
+    assert!(first_error(&dtcs(&format!(
+        "  - {{ code_space: sae_j2012, code: P0171, description: {esc} }}\n"
+    )))
+    .contains("control characters"));
+    let cell_unit = blocks(&format!(
+        "  - protocol: kw1281\n    module_address: 1\n    group: 1\n    cells:\n      - {{ label: x, unit: {esc} }}\n"
+    ));
+    assert!(first_error(&cell_unit).contains("control characters"));
+    let bad_author = modules("  - { address: 1, name: X }\n").replace("Tester", "\"A\\u001b[2J\"");
+    assert!(first_error(&bad_author).contains("control characters"));
+    let bad_notes = modules("  - { address: 1, name: X }\n")
+        .replace("license: CC0-1.0", "license: CC0-1.0\n  notes: \"x\\ty\"");
+    assert!(
+        first_error(&bad_notes).contains("control characters"),
+        "tabs are control chars too"
+    );
+    // A newline in notes is fine; in a name it is not.
+    let ok_notes = modules("  - { address: 1, name: X }\n").replace(
+        "license: CC0-1.0",
+        "license: CC0-1.0\n  notes: \"line one\\nline two\"",
+    );
+    assert!(parse_str("t", &ok_notes).is_ok());
+    assert!(first_error(&modules("  - { address: 1, name: \"a\\nb\" }\n")).contains("control"));
+}
+
+#[test]
+fn oversized_files_are_refused_without_being_read() {
+    let dir = std::env::temp_dir().join(format!("opendiag-data-big-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("huge.yaml"), vec![b'#'; 1024 * 1024 + 1]).unwrap();
+    let errs = load_dir(&dir).unwrap_err();
+    fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        errs.iter()
+            .any(|e| e.file == "huge.yaml" && e.message.contains("limit")),
+        "{errs:?}"
+    );
+}
+
+#[test]
 fn module_rules() {
     assert!(first_error(&modules(
         "  - { address: 1, name: A }\n  - { address: 1, name: B }\n"

@@ -12,7 +12,7 @@ use std::time::Duration;
 use opendiag_core::{Error, Result};
 use opendiag_transport::{Capabilities, Frame, Transport};
 
-use super::block::{title, Block, END_BYTE};
+use super::block::{title, Block};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Phase {
@@ -288,7 +288,6 @@ impl Kw1281Sim {
                         Ok(block) => self.handle_block(block),
                         Err(e) => self.violate(e.to_string()),
                     }
-                    debug_assert_eq!(bytes.last(), Some(&END_BYTE));
                 } else {
                     self.rx.push_back(!b);
                 }
