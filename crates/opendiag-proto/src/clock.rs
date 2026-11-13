@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 /// Monotonic time as a `Duration` since an arbitrary origin.
 pub trait Clock {
     fn now(&self) -> Duration;
+    /// Block until `t`. Real clocks sleep; the fake clock jumps forward.
+    fn wait_until(&self, t: Duration);
 }
 
 /// Wall-clock time for real hardware.
@@ -30,6 +32,13 @@ impl Default for SystemClock {
 impl Clock for SystemClock {
     fn now(&self) -> Duration {
         self.origin.elapsed()
+    }
+
+    fn wait_until(&self, t: Duration) {
+        let remaining = t.saturating_sub(self.now());
+        if !remaining.is_zero() {
+            std::thread::sleep(remaining);
+        }
     }
 }
 
@@ -59,6 +68,10 @@ impl FakeClock {
 impl Clock for FakeClock {
     fn now(&self) -> Duration {
         self.now.get()
+    }
+
+    fn wait_until(&self, t: Duration) {
+        self.advance_to(t);
     }
 }
 

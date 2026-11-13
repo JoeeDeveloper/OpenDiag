@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 opendiag-core = { path = "../opendiag-core" }
+opendiag-transport = { path = "../opendiag-transport" }
 
 [lints]
 workspace = true

@@ -5,12 +5,14 @@
 //! Limits: 8-byte frames, messages up to 4095 bytes (12-bit length).
 
 mod frame;
+mod link;
 mod receiver;
 mod sender;
 
 use std::time::Duration;
 
 pub use frame::{FlowStatus, IsoTpFrame};
+pub use link::IsoTpLink;
 pub use receiver::{Receiver, RxEvent};
 pub use sender::{Poll, Sender};
 
