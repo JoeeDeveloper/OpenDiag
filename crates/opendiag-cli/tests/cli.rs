@@ -577,6 +577,95 @@ fn hardware_flag_combinations_are_validated_with_helpful_messages() {
     );
 }
 
+#[test]
+fn report_writes_a_labelled_simulated_html_file() {
+    let out = temp_file("report.html");
+    let _ = std::fs::remove_file(&out);
+    for (flag, marker) in [
+        ("--simulate-kw1281", "VIRTUAL ENGINE ECU"),
+        ("--simulate-kwp", "VIRTUAL KWP2000 ECU"),
+        ("--simulate", "P0171-00"),
+    ] {
+        let (ok, stdout, err) = run(&["report", flag, "--out", out.to_str().unwrap()], "");
+        assert!(ok, "{flag}: {err}");
+        assert!(stdout.is_empty(), "the HTML goes to the file, not stdout");
+        assert!(
+            err.contains("Report written to") && err.contains("review it before sharing"),
+            "{err}"
+        );
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.starts_with("<!doctype html>"), "{flag}");
+        assert!(
+            html.contains("SIMULATED DATA"),
+            "{flag}: simulated reports must say so"
+        );
+        assert!(html.contains(marker), "{flag}: {marker}");
+    }
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn report_goes_to_stdout_by_default_and_is_read_only() {
+    let (ok, out, err) = run(&["report", "--simulate-kw1281"], "");
+    assert!(ok, "{err}");
+    assert!(
+        out.starts_with("<!doctype html>") && out.contains("00525") && out.contains("00017"),
+        "{out}"
+    );
+    // Read-only: no backup file is created by generating a report.
+    assert!(!default_backup_file().exists());
+}
+
+#[test]
+fn report_uses_the_data_set_for_descriptions_and_escapes_them() {
+    let dir = std::env::temp_dir().join(format!("opendiag-report-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A valid data file whose description tries to inject markup.
+    std::fs::write(
+        dir.join("dtc.yaml"),
+        "format: opendiag-data/0\nkind: dtcs\nprovenance:\n  author: T\n  source: original_work\n  license: CC0-1.0\nentries:\n  - { code_space: sae_j2012, code: P0171, description: \"<b onmouseover=x>lean</b>\" }\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .args(["report", "--simulate"])
+        .env("OPENDIAG_DATA", &dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    assert!(
+        html.contains("&lt;b onmouseover=x&gt;lean&lt;/b&gt;"),
+        "{html}"
+    );
+    assert!(!html.contains("<b onmouseover"), "{html}");
+
+    // With the shipped data set, a real description appears.
+    let shipped = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .args(["report", "--simulate"])
+        .env("OPENDIAG_DATA", data_dir())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&shipped.stdout).contains("Fuel mixture too lean on bank 1"));
+}
+
+#[test]
+fn report_errors_are_clear() {
+    let (ok, _, err) = run(
+        &[
+            "report",
+            "--simulate-kw1281",
+            "--out",
+            "no-such-dir-xyz/r.html",
+        ],
+        "",
+    );
+    assert!(!ok && err.contains("cannot write"), "{err}");
+    let (ok, _, err) = run(&["report"], "");
+    assert!(!ok && err.contains("no connection chosen"), "{err}");
+}
+
 fn temp_file(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("opendiag-cli-{}-{name}", std::process::id()))
 }

@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use opendiag_core::Error;
@@ -15,9 +15,9 @@ use opendiag_services::demo::{
     virtual_kwp_module_over, virtual_uds_client_over, TESTER_ID,
 };
 use opendiag_services::{
-    apply_change, apply_clear, apply_restore, log_csv, plan_change, plan_clear, plan_restore,
-    BackupStore, ClearConfirmation, DtcReport, Kw1281Module, KwpModule, Limit, LogConfig, Module,
-    WriteConfirmation,
+    apply_change, apply_clear, apply_restore, format_unix_utc, log_csv, plan_change, plan_clear,
+    plan_restore, render_html, BackupStore, ClearConfirmation, DtcReport, Kw1281Module, KwpModule,
+    Limit, LogConfig, Module, Report, ReportFault, WriteConfirmation,
 };
 use opendiag_transport::{
     list_serial_ports, open_can, KLineSerial, TraceStatus, Tracing, Transport,
@@ -72,6 +72,15 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         interval_ms: u64,
         /// Write CSV here instead of standard output.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Write a standalone HTML report (identification and fault codes). Read-only.
+    /// Open it in a browser, or print it to PDF from there.
+    Report {
+        #[command(flatten)]
+        target: Target,
+        /// Write the HTML here instead of standard output.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -314,6 +323,7 @@ fn main() -> ExitCode {
             };
             log_cmd(&target, &cfg, out.as_deref())
         }
+        Some(Cmd::Report { target, out }) => report_cmd(&target, out.as_deref()),
         Some(Cmd::Ports) => ports(),
         Some(Cmd::Probe {
             port,
@@ -706,25 +716,79 @@ fn adaptation_set(
     Ok(())
 }
 
-/// `YYYY-MM-DD HH:MM:SS` in UTC from Unix seconds (civil-from-days, no date crate needed).
-fn format_unix(secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
+/// How the connection was made, in words for the report; and whether it is simulated.
+fn describe_connection(t: &Target) -> (String, bool) {
+    if t.simulate {
+        return ("Simulated: built-in virtual UDS ECU".into(), true);
+    }
+    if t.simulate_kw1281 {
+        return ("Simulated: built-in virtual KW1281 module".into(), true);
+    }
+    if t.simulate_kwp {
+        return ("Simulated: built-in virtual KWP2000 module".into(), true);
+    }
+    let addr = t.address;
+    if let Some(iface) = &t.can {
+        return (
+            format!("CAN interface {iface}, KWP2000 over TP2.0, module {addr:#04X}"),
+            false,
+        );
+    }
+    let port = t.port.as_deref().unwrap_or("?");
+    let proto = if t.fast_init {
+        "KWP2000 (fast init)"
+    } else {
+        "KW1281 (5-baud init)"
+    };
+    (
+        format!(
+            "K-line {port} at {} baud, {proto}, module {addr:#04X}",
+            t.baud
+        ),
+        false,
     )
+}
+
+fn report_cmd(target: &Target, out: Option<&Path>) -> Result<(), String> {
+    let mut conn = connect(target)?;
+    let data = load_data();
+    let ident = conn.module.identify().map_err(|e| e.to_string())?;
+    let dtcs = conn.module.read_dtcs().map_err(|e| e.to_string())?;
+    let module = conn.module.faults().describe();
+    let (connection, simulated) = describe_connection(target);
+    let faults = dtcs
+        .iter()
+        .map(|d| ReportFault {
+            text: d.text.clone(),
+            status: d.status,
+            flags: d.flags.iter().map(|f| (*f).to_string()).collect(),
+            description: describe(data.as_ref(), &d.text),
+        })
+        .collect();
+    let report = Report {
+        generated_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        tool_version: env!("CARGO_PKG_VERSION").to_string(),
+        connection,
+        simulated,
+        module: Some(module),
+        ident,
+        faults,
+    };
+    let html = render_html(&report);
+    match out {
+        Some(path) => {
+            std::fs::write(path, html)
+                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            eprintln!(
+                "Report written to {}. It may contain a VIN and other identifying data; review it before sharing.",
+                path.display()
+            );
+        }
+        None => print!("{html}"),
+    }
+    Ok(())
 }
 
 fn backup_list(store: &StoreArg) -> Result<(), String> {
@@ -745,7 +809,7 @@ fn backup_list(store: &StoreArg) -> Result<(), String> {
             println!(
                 "{}  {} UTC  {} fault codes cleared ({} stored)  [{:?}]",
                 r.id,
-                format_unix(r.created_unix),
+                format_unix_utc(r.created_unix),
                 r.module.as_deref().unwrap_or(&r.protocol),
                 r.codes.len(),
                 r.status
@@ -757,7 +821,7 @@ fn backup_list(store: &StoreArg) -> Result<(), String> {
             println!(
                 "{}  {} UTC  {} module {:#04X} {} channel {}: {} -> {}  [{:?}]{restore}",
                 r.id,
-                format_unix(r.created_unix),
+                format_unix_utc(r.created_unix),
                 r.protocol,
                 r.module_address,
                 r.kind,

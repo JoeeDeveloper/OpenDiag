@@ -10,6 +10,7 @@ pub mod fault_clear;
 mod kw1281_module;
 mod kwp_module;
 pub mod live;
+pub mod report;
 
 pub use adaptation::{
     apply_change, apply_restore, plan_change, plan_restore, AdaptationAccess, Applied, Change,
@@ -20,6 +21,7 @@ pub use fault_clear::{apply_clear, plan_clear, ClearConfirmation, ClearOutcome, 
 pub use kw1281_module::Kw1281Module;
 pub use kwp_module::KwpModule;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
+pub use report::{escape_html, format_unix_utc, render_html, Report, ReportFault};
 
 use opendiag_core::{Error, Result, WriteMode};
 use opendiag_proto::uds::UdsClient;

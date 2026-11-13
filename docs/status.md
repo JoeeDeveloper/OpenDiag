@@ -53,6 +53,14 @@ Last reviewed 2026-11-13. This is deliberately blunt.
 - CI: the macOS runner sometimes fails to start (capacity), unrelated to the code. `main` has no branch
   protection or required checks.
 
+## Reports
+
+`opendiag report` produces a standalone HTML file. It is checked structurally by tests (escaping with hostile
+input, a Content-Security-Policy that forbids scripts and network loads, no external references, a simulated-data
+banner). **Its visual layout has not been inspected in real browsers or print preview**, and there is no direct
+PDF output (print to PDF from a browser). It covers identification and fault codes only: no live data, history or
+vehicle-level summary yet.
+
 ## Not started (from the plan)
 
 J2534 and ELM327 transports, PCAN, coding/adaptation/output tests, backup/restore,
