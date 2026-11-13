@@ -8,7 +8,9 @@ provenance:
   notes: >-
     Generic powertrain codes defined by the public SAE J2012 / ISO 15031-6
     standards. The code numbers come from the standard; the descriptions are
-    written in our own words and are deliberately short.
+    written in our own words and are deliberately short. Written from general
+    knowledge of the standard rather than checked line by line against it, so
+    treat every entry as unverified and correct any that are wrong.
 entries:
   - { code_space: sae_j2012, code: P0100, description: Mass or volume air flow sensor circuit fault }
   - { code_space: sae_j2012, code: P0171, description: Fuel mixture too lean on bank 1 }
@@ -22,3 +24,91 @@ entries:
   - { code_space: sae_j2012, code: P0442, description: Small leak detected in the evaporative emission system }
   - { code_space: sae_j2012, code: P0500, description: Vehicle speed sensor fault }
   - { code_space: sae_j2012, code: P0562, description: System voltage too low }
+  - { code_space: sae_j2012, code: P0016, description: Crankshaft and camshaft positions do not correlate on bank 1 }
+  - { code_space: sae_j2012, code: P0087, description: Fuel rail pressure too low }
+  - { code_space: sae_j2012, code: P0088, description: Fuel rail pressure too high }
+  - { code_space: sae_j2012, code: P0101, description: Air flow sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0102, description: Air flow sensor signal too low }
+  - { code_space: sae_j2012, code: P0103, description: Air flow sensor signal too high }
+  - { code_space: sae_j2012, code: P0105, description: Manifold pressure sensor circuit fault }
+  - { code_space: sae_j2012, code: P0106, description: Manifold pressure sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0107, description: Manifold pressure sensor signal too low }
+  - { code_space: sae_j2012, code: P0108, description: Manifold pressure sensor signal too high }
+  - { code_space: sae_j2012, code: P0110, description: Intake air temperature sensor circuit fault }
+  - { code_space: sae_j2012, code: P0112, description: Intake air temperature sensor signal too low }
+  - { code_space: sae_j2012, code: P0113, description: Intake air temperature sensor signal too high }
+  - { code_space: sae_j2012, code: P0115, description: Coolant temperature sensor circuit fault }
+  - { code_space: sae_j2012, code: P0117, description: Coolant temperature sensor signal too low }
+  - { code_space: sae_j2012, code: P0118, description: Coolant temperature sensor signal too high }
+  - { code_space: sae_j2012, code: P0120, description: Throttle or pedal position sensor A circuit fault }
+  - { code_space: sae_j2012, code: P0121, description: Throttle or pedal position sensor A reading out of expected range }
+  - { code_space: sae_j2012, code: P0122, description: Throttle or pedal position sensor A signal too low }
+  - { code_space: sae_j2012, code: P0123, description: Throttle or pedal position sensor A signal too high }
+  - { code_space: sae_j2012, code: P0125, description: Engine too slow to reach temperature for closed-loop fuel control }
+  - { code_space: sae_j2012, code: P0128, description: Coolant temperature below the thermostat regulating temperature }
+  - { code_space: sae_j2012, code: P0130, description: Oxygen sensor circuit fault on bank 1 sensor 1 }
+  - { code_space: sae_j2012, code: P0131, description: Oxygen sensor signal too low on bank 1 sensor 1 }
+  - { code_space: sae_j2012, code: P0132, description: Oxygen sensor signal too high on bank 1 sensor 1 }
+  - { code_space: sae_j2012, code: P0133, description: Oxygen sensor slow to respond on bank 1 sensor 1 }
+  - { code_space: sae_j2012, code: P0134, description: Oxygen sensor shows no activity on bank 1 sensor 1 }
+  - { code_space: sae_j2012, code: P0135, description: Oxygen sensor heater circuit fault on bank 1 sensor 1 }
+  - { code_space: sae_j2012, code: P0136, description: Oxygen sensor circuit fault on bank 1 sensor 2 }
+  - { code_space: sae_j2012, code: P0141, description: Oxygen sensor heater circuit fault on bank 1 sensor 2 }
+  - { code_space: sae_j2012, code: P0170, description: Fuel trim fault on bank 1 }
+  - { code_space: sae_j2012, code: P0173, description: Fuel trim fault on bank 2 }
+  - { code_space: sae_j2012, code: P0174, description: Fuel mixture too lean on bank 2 }
+  - { code_space: sae_j2012, code: P0175, description: Fuel mixture too rich on bank 2 }
+  - { code_space: sae_j2012, code: P0190, description: Fuel rail pressure sensor circuit fault }
+  - { code_space: sae_j2012, code: P0191, description: Fuel rail pressure sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0201, description: Injector circuit fault on cylinder 1 }
+  - { code_space: sae_j2012, code: P0202, description: Injector circuit fault on cylinder 2 }
+  - { code_space: sae_j2012, code: P0203, description: Injector circuit fault on cylinder 3 }
+  - { code_space: sae_j2012, code: P0204, description: Injector circuit fault on cylinder 4 }
+  - { code_space: sae_j2012, code: P0217, description: Engine overtemperature condition }
+  - { code_space: sae_j2012, code: P0230, description: Fuel pump primary circuit fault }
+  - { code_space: sae_j2012, code: P0234, description: Turbocharger or supercharger overboost }
+  - { code_space: sae_j2012, code: P0236, description: Boost pressure sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0299, description: Turbocharger or supercharger underboost }
+  - { code_space: sae_j2012, code: P0305, description: Misfire detected on cylinder 5 }
+  - { code_space: sae_j2012, code: P0306, description: Misfire detected on cylinder 6 }
+  - { code_space: sae_j2012, code: P0325, description: Knock sensor circuit fault on bank 1 }
+  - { code_space: sae_j2012, code: P0335, description: Crankshaft position sensor circuit fault }
+  - { code_space: sae_j2012, code: P0336, description: Crankshaft position sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0340, description: Camshaft position sensor circuit fault }
+  - { code_space: sae_j2012, code: P0341, description: Camshaft position sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0351, description: Ignition coil A primary or secondary circuit fault }
+  - { code_space: sae_j2012, code: P0352, description: Ignition coil B primary or secondary circuit fault }
+  - { code_space: sae_j2012, code: P0353, description: Ignition coil C primary or secondary circuit fault }
+  - { code_space: sae_j2012, code: P0354, description: Ignition coil D primary or secondary circuit fault }
+  - { code_space: sae_j2012, code: P0380, description: Glow plug circuit A fault }
+  - { code_space: sae_j2012, code: P0400, description: Exhaust gas recirculation flow fault }
+  - { code_space: sae_j2012, code: P0401, description: Exhaust gas recirculation flow too low }
+  - { code_space: sae_j2012, code: P0402, description: Exhaust gas recirculation flow too high }
+  - { code_space: sae_j2012, code: P0403, description: Exhaust gas recirculation control circuit fault }
+  - { code_space: sae_j2012, code: P0411, description: Secondary air injection system flow incorrect }
+  - { code_space: sae_j2012, code: P0430, description: Catalytic converter efficiency below threshold on bank 2 }
+  - { code_space: sae_j2012, code: P0440, description: Evaporative emission system fault }
+  - { code_space: sae_j2012, code: P0441, description: Evaporative emission purge flow incorrect }
+  - { code_space: sae_j2012, code: P0443, description: Evaporative emission purge valve circuit fault }
+  - { code_space: sae_j2012, code: P0446, description: Evaporative emission vent valve circuit fault }
+  - { code_space: sae_j2012, code: P0455, description: Large leak detected in the evaporative emission system }
+  - { code_space: sae_j2012, code: P0456, description: Very small leak detected in the evaporative emission system }
+  - { code_space: sae_j2012, code: P0480, description: Cooling fan 1 control circuit fault }
+  - { code_space: sae_j2012, code: P0501, description: Vehicle speed sensor reading out of expected range }
+  - { code_space: sae_j2012, code: P0505, description: Idle speed control system fault }
+  - { code_space: sae_j2012, code: P0506, description: Idle speed lower than expected }
+  - { code_space: sae_j2012, code: P0507, description: Idle speed higher than expected }
+  - { code_space: sae_j2012, code: P0563, description: System voltage too high }
+  - { code_space: sae_j2012, code: P0571, description: Brake switch circuit fault }
+  - { code_space: sae_j2012, code: P0600, description: Serial communication link fault }
+  - { code_space: sae_j2012, code: P0601, description: Control module memory checksum error }
+  - { code_space: sae_j2012, code: P0606, description: Control module processor fault }
+  - { code_space: sae_j2012, code: P0638, description: Throttle actuator out of expected range on bank 1 }
+  - { code_space: sae_j2012, code: P0670, description: Glow plug control module fault }
+  - { code_space: sae_j2012, code: P0700, description: Transmission control system fault }
+  - { code_space: sae_j2012, code: P0715, description: Transmission input speed sensor circuit fault }
+  - { code_space: sae_j2012, code: P0720, description: Transmission output speed sensor circuit fault }
+  - { code_space: sae_j2012, code: P0730, description: Incorrect gear ratio }
+  - { code_space: sae_j2012, code: P0740, description: Torque converter clutch circuit fault }
+  - { code_space: sae_j2012, code: P2002, description: Particulate filter efficiency below threshold on bank 1 }
+  - { code_space: sae_j2012, code: P2279, description: Air leak in the intake system }

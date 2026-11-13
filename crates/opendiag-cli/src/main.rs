@@ -209,6 +209,13 @@ enum DataCmd {
     Validate { path: Option<PathBuf> },
     /// Print the JSON Schema for data files.
     Schema,
+    /// Look up a code as it is displayed (P0171-00 or 00525) in the data files.
+    Lookup {
+        code: String,
+        /// Data directory (default: $OPENDIAG_DATA or ./data).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -307,6 +314,9 @@ fn main() -> ExitCode {
         Some(Cmd::Data {
             action: DataCmd::Validate { path },
         }) => data_validate(path.as_deref().unwrap_or_else(|| Path::new("data"))),
+        Some(Cmd::Data {
+            action: DataCmd::Lookup { code, path },
+        }) => data_lookup(&code, path.as_deref()),
         Some(Cmd::Data {
             action: DataCmd::Schema,
         }) => {
@@ -1026,6 +1036,23 @@ fn data_validate(dir: &Path) -> Result<(), String> {
                 dir.display()
             ))
         }
+    }
+}
+
+fn data_lookup(code: &str, path: Option<&Path>) -> Result<(), String> {
+    let set = match path {
+        Some(dir) => load_dir(dir).map_err(|i| format!("invalid data: {} problem(s)", i.len()))?,
+        None => load_data().ok_or("no valid data found; use --path or set OPENDIAG_DATA")?,
+    };
+    match describe(Some(&set), code.trim()) {
+        Some(d) => {
+            println!("{}  {d}", code.trim());
+            Ok(())
+        }
+        None => Err(format!(
+            "no description for {} in the data files",
+            code.trim()
+        )),
     }
 }
 

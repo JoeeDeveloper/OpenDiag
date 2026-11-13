@@ -1085,3 +1085,22 @@ fn serve_uses_a_fresh_token_each_run() {
     assert_ne!(a.token, b.token);
     assert_eq!(a.token.len(), 32);
 }
+
+#[test]
+fn data_lookup_finds_known_codes_and_rejects_unknown_ones() {
+    let ok = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .args(["data", "lookup", "P0171-00", "--path", "../../data"])
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("too lean"));
+    let bad = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .args(["data", "lookup", "P9999", "--path", "../../data"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+}
