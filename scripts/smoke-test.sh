@@ -58,6 +58,9 @@ expect "KWP2000 scan" "$out" "VIRTUAL KWP2000 ECU"
 
 out=$(run dtc read --simulate 2>/dev/null) || fail "dtc read --simulate"
 expect "UDS fault codes" "$out" "P0171-00"
+
+out=$(run dtc read --simulate-elm327 2>/dev/null) || fail "dtc read --simulate-elm327"
+expect "UDS fault codes through the software ELM327" "$out" "P0171-00"
 # Descriptions come from the data files shipped in ./data.
 expect "descriptions from shipped data" "$out" "Fuel mixture too lean on bank 1"
 

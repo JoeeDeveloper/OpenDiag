@@ -2,7 +2,7 @@
 
 An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi, Seat, Skoda): a VCDS alternative on commodity hardware.
 
-**Status: early, simulator-tested, never run against a real car.** The protocol stack, a CLI and an open data format exist and pass ~180 automated tests, but every test uses a simulator or a published capture. Read [docs/status.md](docs/status.md) before connecting anything to a vehicle.
+**Status: early, simulator-tested, never run against a real car.** The protocol stack, a CLI and an open data format exist and pass about 300 automated tests, but every test uses a simulator or a published capture. Read [docs/status.md](docs/status.md) before connecting anything to a vehicle.
 
 ## What works today
 
