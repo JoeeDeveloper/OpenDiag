@@ -16,15 +16,19 @@ use std::time::Duration;
 
 use opendiag_core::Result;
 use opendiag_proto::clock::FakeClock;
+use opendiag_proto::isotp::{Config, IsoTpLink};
 use opendiag_proto::kw1281::sim::Kw1281Sim;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::sim::KwpSim;
 use opendiag_proto::kwp::{KwpClient, KwpConfig};
+use opendiag_proto::tp20::sim::Tp20Sim;
+use opendiag_proto::tp20::{Tp20Config, Tp20KwpClient, Tp20Link};
+use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_services::{
     apply_change, apply_clear, plan_change, plan_clear, BackupStore, ClearConfirmation,
     Kw1281Module, KwpModule, Module, WriteConfirmation,
 };
-use opendiag_transport::{Capabilities, Frame, Transport};
+use opendiag_transport::{Capabilities, Frame, Simulator, Transport};
 
 const SEEDS: u64 = 250;
 
@@ -256,12 +260,110 @@ fn run_kw1281_adaptation(store: &BackupStore, seed: u64, watch: &Watch) {
     );
 }
 
+/// A scripted `Simulator` that calls a hook when a ClearDiagnosticInformation request
+/// (SID 0x14, in a single ISO-TP frame) is sent to it.
+struct HookedSim {
+    inner: Simulator,
+    hook: Box<dyn FnMut(&str)>,
+}
+
+impl Transport for HookedSim {
+    fn send(&mut self, frame: &Frame) -> Result<()> {
+        if let Frame::Can { data, .. } = frame {
+            if data.get(1) == Some(&0x14) {
+                (self.hook)("clear");
+            }
+        }
+        self.inner.send(frame)
+    }
+
+    fn recv(&mut self, timeout: Duration) -> Result<Frame> {
+        self.inner.recv(timeout)
+    }
+
+    fn set_baud(&mut self, baud: u32) -> Result<()> {
+        self.inner.set_baud(baud)
+    }
+
+    fn slow_init(&mut self, address: u8) -> Result<()> {
+        self.inner.slow_init(address)
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+}
+
+fn run_uds_clear(store: &BackupStore, seed: u64, watch: &Watch) {
+    // One stored code (P0171), a positive reply to the clear; scripted, so the code
+    // "comes back" like an active fault (that outcome is irrelevant to this property).
+    let req = |p: &[u8]| {
+        let mut d = vec![p.len() as u8];
+        d.extend_from_slice(p);
+        Frame::can(0x7E0, &d)
+    };
+    let rsp = |p: &[u8]| {
+        let mut d = vec![p.len() as u8];
+        d.extend_from_slice(p);
+        vec![Frame::can(0x7E8, &d)]
+    };
+    let sim = Simulator::new()
+        .on(
+            req(&[0x19, 0x02, 0xFF]),
+            rsp(&[0x59, 0x02, 0xFF, 0x01, 0x71, 0x00, 0x09]),
+        )
+        .on(req(&[0x14, 0xFF, 0xFF, 0xFF]), rsp(&[0x54]));
+    let sim = HookedSim {
+        inner: sim,
+        hook: Box::new(watch.hook(store.path(), "\"kind\":\"dtc_clear\"")),
+    };
+    let t = Mutating::new(sim, seed, rate(seed));
+    let link = IsoTpLink::new(t, FakeClock::new(), 0x7E0, 0x7E8, Config::default());
+    let mut uds = UdsClient::new(link, UdsConfig::default());
+    let Ok(shown) = plan_clear(uds.faults()) else {
+        return;
+    };
+    let _ = apply_clear(
+        uds.faults(),
+        store,
+        &shown,
+        &ClearConfirmation::for_codes(&shown),
+    );
+}
+
+fn run_tp20_clear(store: &BackupStore, seed: u64, watch: &Watch) {
+    let sim = Tp20Sim::new(1)
+        .block_size(2)
+        .respond(&[0x10, 0x89], &[0x50, 0x89])
+        .respond(&[0x18, 0x00, 0xFF, 0x00], &[0x58, 0x01, 0x30, 0x39, 0x20])
+        .respond(&[0x14, 0xFF, 0x00], &[0x54, 0xFF, 0x00])
+        .on_write(watch.hook(store.path(), "\"kind\":\"dtc_clear\""));
+    let t = Mutating::new(sim, seed, rate(seed));
+    let Ok(link) = Tp20Link::open(t, FakeClock::new(), &Tp20Config::new(1)) else {
+        return;
+    };
+    let Ok(mut m) = KwpModule::start(Tp20KwpClient::new(link), 1, "kwp2000-tp20") else {
+        return;
+    };
+    let Ok(shown) = plan_clear(m.faults()) else {
+        return;
+    };
+    let _ = apply_clear(
+        m.faults(),
+        store,
+        &shown,
+        &ClearConfirmation::for_codes(&shown),
+    );
+}
+
 type Run = fn(&BackupStore, u64, &Watch);
 
-const FLOWS: [(&str, Run); 3] = [
+const FLOWS: [(&str, Run); 5] = [
     ("clear over KW1281", run_kw1281_clear),
-    ("clear over KWP2000", run_kwp_clear),
+    ("clear over KWP2000 (K-line)", run_kwp_clear),
     ("adaptation over KW1281", run_kw1281_adaptation),
+    ("clear over UDS (ISO-TP)", run_uds_clear),
+    ("clear over KWP2000 over TP2.0", run_tp20_clear),
 ];
 
 #[test]

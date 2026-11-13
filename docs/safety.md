@@ -33,12 +33,14 @@ what makes a bad change reversible.
 The central claim is "no write reaches a module unless a durable backup already exists". It is tested as a
 property, not just by examples: the virtual modules call a hook the instant a modifying request arrives, and the
 hook looks at the backup file *at that moment*. `crates/opendiag-services/tests/write_safety.rs` runs every guarded
-flow (clear over KW1281, clear over KWP2000, adaptation over KW1281) 250 times each over a transport that corrupts,
+flow (clear over KW1281, KWP2000 on K-line, UDS and KWP2000 over TP2.0, and adaptation over KW1281) 250 times each over a transport that corrupts,
 truncates, duplicates and invents frames, and also with an unwritable backup file (where **no** write may arrive).
 A separate test proves the checker itself would flag an unguarded write. **Any new write path must be added to
 this test.**
 
-This found a real hazard: under corrupted traffic the KW1281 client could acknowledge bytes the module never sent,
+The framed protocols (UDS over ISO-TP, KWP2000 over TP2.0) passed from the start: sequence numbers and message
+lengths mean noise cannot be assembled into a destructive request. The KW1281 byte stream is the exposed one, and
+the test found a real hazard there: under corrupted traffic the KW1281 client could acknowledge bytes the module never sent,
 and a module could read that noise as a command (blocks have no checksum). The client now does not acknowledge an
 invalid block length or an out-of-sequence block counter, and after the first error mid-session it sends nothing
 more into that session (reconnect to continue). How a *real* module reacts to a desynchronised byte stream is

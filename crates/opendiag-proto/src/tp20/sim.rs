@@ -45,7 +45,13 @@ pub struct Tp20Sim {
     sent: Vec<Frame>,
     messages: Vec<Vec<u8>>,
     violations: Vec<String>,
+    /// Called when a complete modifying request (ClearDiagnosticInformation, SID 0x14)
+    /// has arrived, before the module acts on it.
+    write_hook: Option<WriteHook>,
 }
+
+/// Callback run when a modifying request arrives (see [`Tp20Sim::on_write`]).
+type WriteHook = Box<dyn FnMut(&str)>;
 
 impl Tp20Sim {
     pub fn new(address: u8) -> Self {
@@ -75,7 +81,15 @@ impl Tp20Sim {
             sent: Vec::new(),
             messages: Vec::new(),
             violations: Vec::new(),
+            write_hook: None,
         }
+    }
+
+    /// Run `hook` with a short label ("clear") the moment a complete modifying request
+    /// has arrived. Tests use it to check what must already be true at that instant.
+    pub fn on_write(mut self, hook: impl FnMut(&str) + 'static) -> Self {
+        self.write_hook = Some(Box::new(hook));
+        self
     }
 
     /// Packets the tester must send before it waits for an ACK (and that this
@@ -288,6 +302,11 @@ impl Tp20Sim {
             let request = std::mem::take(&mut self.assembling);
             self.total = None;
             self.messages.push(request.clone());
+            if request.first() == Some(&0x14) {
+                if let Some(h) = self.write_hook.as_mut() {
+                    h("clear");
+                }
+            }
             let replies = self.responses.get(&request).cloned().unwrap_or_else(|| {
                 // serviceNotSupported
                 vec![vec![0x7F, request.first().copied().unwrap_or(0), 0x11]]
