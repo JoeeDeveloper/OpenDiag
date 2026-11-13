@@ -16,6 +16,13 @@ license = "GPL-3.0-or-later"
 rust-version = "1.75"
 repository = "https://github.com/JoeeDeveloper/opendiag"
 
+[profile.release]
+# Smaller, faster release binaries. Unwinding is kept (no panic = "abort"):
+# sessions are closed in Drop, and that must still run if something panics.
+lto = "thin"
+codegen-units = 1
+strip = true
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

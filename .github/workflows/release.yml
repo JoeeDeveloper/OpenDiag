@@ -1,0 +1,166 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds, tests and publishes binaries.
+# Running the workflow by hand ("Run workflow") is a DRY RUN: it builds and
+# smoke-tests every package and keeps them as downloadable artifacts, but
+# publishes nothing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Tag matches Cargo version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare tag and workspace version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "Cargo workspace version: $version"
+          if [ "$REF_TYPE" = "tag" ]; then
+            if [ "$REF_NAME" != "v$version" ]; then
+              echo "::error::Tag $REF_NAME does not match the Cargo version v$version. Bump the version, commit, then tag."
+              exit 1
+            fi
+          else
+            echo "Not a tag run: this is a dry run and nothing will be published."
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A static musl binary runs on any Linux distribution, old or new.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, bin: opendiag, archive: tar.gz, native: true }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, bin: opendiag.exe, archive: zip, native: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, bin: opendiag, archive: tar.gz, native: true }
+          # Cross-built on an Apple Silicon runner; smoke-tested under Rosetta on a best-effort basis.
+          - { os: macos-latest, target: x86_64-apple-darwin, bin: opendiag, archive: tar.gz, native: false }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p opendiag-cli --target ${{ matrix.target }}
+
+      - name: Stage files
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          name="opendiag-${version}-${{ matrix.target }}"
+          bash scripts/stage-release.sh "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/$name"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Smoke test (native)
+        if: matrix.native
+        shell: bash
+        run: bash scripts/smoke-test.sh "dist/$NAME" "${{ matrix.bin }}"
+
+      - name: Smoke test (Intel build under Rosetta, best effort)
+        if: ${{ !matrix.native }}
+        continue-on-error: true
+        shell: bash
+        run: bash scripts/smoke-test.sh "dist/$NAME" "${{ matrix.bin }}" "arch -x86_64"
+
+      - name: Archive (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+
+      - name: Archive (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/$env:NAME" -DestinationPath "dist/$env:NAME.zip"
+
+      - name: Checksum
+        shell: bash
+        working-directory: dist
+        run: |
+          file="$NAME.${{ matrix.archive }}"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$file" > "$file.sha256"
+          else
+            shasum -a 256 "$file" > "$file.sha256"
+          fi
+          cat "$file.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    # Only for pushed tags; a manual run never publishes.
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Combine checksums
+        working-directory: dist
+        run: |
+          cat ./*.sha256 > SHA256SUMS
+          rm ./*.sha256
+          cat SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=""
+          case "$TAG" in
+            v0.*) prerelease="--prerelease" ;;
+          esac
+          cat > notes.md <<'EOF'
+          **Early release, tested against simulators only. It has never been run against a real vehicle.**
+          Read `docs/status.md` before connecting anything to a car, and start with read-only commands.
+
+          - Each archive holds the `opendiag` binary, the open data files it uses for descriptions, the docs and the licence. Unpack it and run `opendiag` from inside that folder.
+          - **The binaries are not code-signed.** Windows SmartScreen and macOS Gatekeeper will warn about them. Check your download against `SHA256SUMS`.
+          - The Intel macOS build is cross-compiled and was smoke-tested only on a best-effort basis.
+          EOF
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "OpenDiag $TAG" \
+            --notes-file notes.md \
+            --generate-notes \
+            $prerelease
