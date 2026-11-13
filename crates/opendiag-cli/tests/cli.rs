@@ -103,6 +103,101 @@ fn slow_init_scan_reports_missing_port() {
     assert!(err.contains("cannot open"), "{err}");
 }
 
+#[test]
+fn log_writes_csv_to_stdout_with_changing_values() {
+    let (ok, out, err) = run(
+        &[
+            "log",
+            "--simulate-kw1281",
+            "--groups",
+            "1,2",
+            "--samples",
+            "3",
+            "--interval-ms",
+            "10",
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "time_ms,group,cell,formula,a,b");
+    assert_eq!(lines.len(), 1 + 3 * 3, "3 rounds x (2 + 1 cells): {out}");
+    assert!(lines[1].starts_with("0,1,1,1,16,32"), "{}", lines[1]);
+    assert!(
+        out.contains(",1,1,1,16,40\n"),
+        "value changes between rounds: {out}"
+    );
+    assert!(err.contains("Logged 3 round(s), 9 row(s)"), "{err}");
+}
+
+#[test]
+fn log_writes_to_a_file_with_out() {
+    let path = std::env::temp_dir().join(format!("opendiag-log-{}.csv", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let (ok, out, err) = run(
+        &[
+            "log",
+            "--simulate-kw1281",
+            "--groups",
+            "2",
+            "--samples",
+            "2",
+            "--interval-ms",
+            "10",
+            "--out",
+            path.to_str().unwrap(),
+        ],
+        "",
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(ok, "{err}");
+    assert!(out.is_empty(), "CSV goes to the file, not stdout: {out}");
+    assert_eq!(text.lines().count(), 1 + 2);
+}
+
+#[test]
+fn log_refuses_modules_without_live_data_and_bad_input() {
+    let (ok, _, err) = run(&["log", "--simulate", "--groups", "1"], "");
+    assert!(!ok);
+    assert!(err.contains("only available for KW1281"), "{err}");
+
+    let (ok, _, err) = run(&["log", "--simulate-kw1281", "--groups", "x"], "");
+    assert!(!ok && err.contains("invalid value"), "{err}");
+
+    let (ok, _, _) = run(&["log", "--simulate-kw1281"], "");
+    assert!(!ok, "--groups is required");
+
+    let (ok, _, err) = run(
+        &[
+            "log",
+            "--simulate-kw1281",
+            "--groups",
+            "1",
+            "--interval-ms",
+            "0",
+        ],
+        "",
+    );
+    assert!(!ok && err.contains("interval"), "{err}");
+
+    let (ok, _, err) = run(
+        &[
+            "log",
+            "--simulate-kw1281",
+            "--groups",
+            "99",
+            "--samples",
+            "1",
+        ],
+        "",
+    );
+    assert!(
+        !ok && err.contains("NAK"),
+        "unknown group is reported: {err}"
+    );
+}
+
 fn data_dir() -> String {
     format!("{}/../../data", env!("CARGO_MANIFEST_DIR"))
 }

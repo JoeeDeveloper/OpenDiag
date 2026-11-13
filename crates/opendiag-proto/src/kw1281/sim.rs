@@ -29,7 +29,8 @@ pub struct Kw1281Sim {
     keywords: (u8, u8),
     ident: Vec<Vec<u8>>,
     faults: Vec<(u16, u8)>,
-    groups: HashMap<u8, Vec<u8>>,
+    groups: HashMap<u8, Vec<Vec<u8>>>,
+    group_reads: HashMap<u8, usize>,
 
     phase: Phase,
     rx: VecDeque<u8>,
@@ -59,6 +60,7 @@ impl Kw1281Sim {
             ident: Vec::new(),
             faults: Vec::new(),
             groups: HashMap::new(),
+            group_reads: HashMap::new(),
             phase: Phase::Idle,
             rx: VecDeque::new(),
             tx_pending: VecDeque::new(),
@@ -96,9 +98,17 @@ impl Kw1281Sim {
     }
 
     /// Script a measuring-block group as `(formula, a, b)` cells.
-    pub fn group(mut self, group: u8, cells: &[(u8, u8, u8)]) -> Self {
-        let data = cells.iter().flat_map(|&(f, a, b)| [f, a, b]).collect();
-        self.groups.insert(group, data);
+    pub fn group(self, group: u8, cells: &[(u8, u8, u8)]) -> Self {
+        self.group_cycle(group, &[cells])
+    }
+
+    /// Script a group whose value changes: each read returns the next frame, wrapping around.
+    pub fn group_cycle(mut self, group: u8, frames: &[&[(u8, u8, u8)]]) -> Self {
+        let frames = frames
+            .iter()
+            .map(|cells| cells.iter().flat_map(|&(f, a, b)| [f, a, b]).collect())
+            .collect();
+        self.groups.insert(group, frames);
         self
     }
 
@@ -206,17 +216,23 @@ impl Kw1281Sim {
             }
             title::GROUP_READ => {
                 let group = block.data.first().copied().unwrap_or(0);
-                let reply = match self.groups.get(&group) {
-                    Some(data) => Block {
+                let reply = if let Some(frames) = self.groups.get(&group).filter(|f| !f.is_empty())
+                {
+                    // Successive reads walk through the scripted frames, then wrap.
+                    let n = self.group_reads.entry(group).or_insert(0);
+                    let data = frames[*n % frames.len()].clone();
+                    *n += 1;
+                    Block {
                         counter: 0,
                         title: title::GROUP_READ_RESPONSE,
-                        data: data.clone(),
-                    },
-                    None => Block {
+                        data,
+                    }
+                } else {
+                    Block {
                         counter: 0,
                         title: title::NAK,
                         data: Vec::new(),
-                    },
+                    }
                 };
                 self.queue.push_back(reply);
             }

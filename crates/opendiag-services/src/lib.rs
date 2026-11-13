@@ -5,8 +5,10 @@
 
 pub mod demo;
 mod kw1281_module;
+pub mod live;
 
 pub use kw1281_module::Kw1281Module;
+pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
 
 use opendiag_core::{Error, Result, WriteMode};
 use opendiag_proto::uds::UdsClient;
@@ -114,6 +116,11 @@ pub trait Module {
     /// Clear all DTCs. Needs a [`ClearConfirmation`]; returns the codes stored
     /// beforehand so the caller can keep a record.
     fn clear_dtcs(&mut self, confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>>;
+
+    /// Live measuring data, if this kind of module supports it (KW1281 only so far).
+    fn live(&mut self) -> Option<&mut dyn LiveData> {
+        None
+    }
 }
 
 impl<T: Transport, C: Clock> Module for UdsClient<T, C> {

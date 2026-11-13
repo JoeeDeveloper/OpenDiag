@@ -2,10 +2,10 @@
 
 use opendiag_core::{Result, WriteMode};
 use opendiag_proto::clock::Clock;
-use opendiag_proto::kw1281::{Fault, Kw1281Client};
+use opendiag_proto::kw1281::{Fault, Kw1281Client, RawMeasurement};
 use opendiag_transport::Transport;
 
-use crate::{ClearConfirmation, DtcReport, Ident, Module};
+use crate::{ClearConfirmation, DtcReport, Ident, LiveData, Module};
 
 /// A KW1281 module with an open session. The session is ended when this is dropped.
 pub struct Kw1281Module<T: Transport, C: Clock> {
@@ -61,6 +61,16 @@ impl<T: Transport, C: Clock> Module for Kw1281Module<T, C> {
         self.client.set_write_mode(previous);
         result?;
         Ok(before)
+    }
+
+    fn live(&mut self) -> Option<&mut dyn LiveData> {
+        Some(self)
+    }
+}
+
+impl<T: Transport, C: Clock> LiveData for Kw1281Module<T, C> {
+    fn read_group(&mut self, group: u8) -> Result<Vec<RawMeasurement>> {
+        self.client.read_group(group)
     }
 }
 

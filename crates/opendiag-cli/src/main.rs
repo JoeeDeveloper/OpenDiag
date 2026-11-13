@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use opendiag_data::{json_schema_pretty, load_dir, CodeSpace, DataSet};
@@ -8,7 +9,9 @@ use opendiag_proto::clock::SystemClock;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig};
 use opendiag_services::demo::{virtual_kw1281_module, virtual_uds_client, TESTER_ID};
-use opendiag_services::{ClearConfirmation, DtcReport, Kw1281Module, Module};
+use opendiag_services::{
+    log_csv, ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module,
+};
 use opendiag_transport::{list_serial_ports, KLineSerial};
 
 /// Open source VAG group diagnostic tool.
@@ -32,6 +35,26 @@ enum Cmd {
     Data {
         #[command(subcommand)]
         action: DataCmd,
+    },
+    /// Log live measuring-block data to CSV (KW1281 modules). Values are raw cells.
+    Log {
+        #[command(flatten)]
+        target: Target,
+        /// Measuring-block groups to read each round, e.g. --groups 1,2.
+        #[arg(long, value_delimiter = ',', required = true)]
+        groups: Vec<u8>,
+        /// Stop after this many rounds (default 20 if no limit is given).
+        #[arg(long)]
+        samples: Option<u32>,
+        /// Stop after this many seconds instead.
+        #[arg(long, conflicts_with = "samples")]
+        duration_secs: Option<u64>,
+        /// Time between rounds.
+        #[arg(long, default_value_t = 500)]
+        interval_ms: u64,
+        /// Write CSV here instead of standard output.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// List serial ports (to find your K-line cable).
     Ports,
@@ -133,6 +156,25 @@ fn main() -> ExitCode {
         }) => {
             println!("{}", json_schema_pretty());
             Ok(())
+        }
+        Some(Cmd::Log {
+            target,
+            groups,
+            samples,
+            duration_secs,
+            interval_ms,
+            out,
+        }) => {
+            let limit = match duration_secs {
+                Some(s) => Limit::Duration(Duration::from_secs(s)),
+                None => Limit::Samples(samples.unwrap_or(20)),
+            };
+            let cfg = LogConfig {
+                groups,
+                interval: Duration::from_millis(interval_ms),
+                limit,
+            };
+            log_cmd(&target, &cfg, out.as_deref())
         }
         Some(Cmd::Ports) => ports(),
         Some(Cmd::Probe {
@@ -271,6 +313,31 @@ fn scan(target: &Target) -> Result<(), String> {
     for line in ident.lines.iter().skip(1) {
         println!("Ident            : {line}");
     }
+    Ok(())
+}
+
+fn log_cmd(target: &Target, cfg: &LogConfig, out: Option<&Path>) -> Result<(), String> {
+    let mut module = connect(target)?;
+    let live = module.live().ok_or(
+        "live data is only available for KW1281 modules so far (use --simulate-kw1281 or --slow-init)",
+    )?;
+    let clock = SystemClock::new();
+    let summary = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+            let mut w = io::BufWriter::new(file);
+            log_csv(live, &clock, cfg, &mut w).map_err(|e| e.to_string())?
+        }
+        None => log_csv(live, &clock, cfg, &mut io::stdout().lock()).map_err(|e| e.to_string())?,
+    };
+    eprintln!(
+        "Logged {} round(s), {} row(s){}.",
+        summary.samples,
+        summary.rows,
+        out.map(|p| format!(" to {}", p.display()))
+            .unwrap_or_default()
+    );
     Ok(())
 }
 

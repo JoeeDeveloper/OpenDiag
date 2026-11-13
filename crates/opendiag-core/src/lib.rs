@@ -15,6 +15,8 @@ pub enum Error {
     NegativeResponse { service: u8, nrc: u8 },
     /// A write was attempted while the session is read-only.
     WritesLocked(String),
+    /// Writing a log or other file failed.
+    Io(String),
 }
 
 impl fmt::Display for Error {
@@ -26,6 +28,7 @@ impl fmt::Display for Error {
             Error::NegativeResponse { service, nrc } => {
                 write!(f, "negative response {nrc:#04x} to service {service:#04x}")
             }
+            Error::Io(m) => write!(f, "I/O error: {m}"),
             Error::WritesLocked(what) => {
                 write!(f, "writes are locked (read-only mode): {what}")
             }

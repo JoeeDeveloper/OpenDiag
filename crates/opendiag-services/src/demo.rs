@@ -17,6 +17,16 @@ pub fn virtual_kw1281_bus() -> Kw1281Sim {
         .ident_line("VIRTUAL ENGINE ECU")
         .fault(525, 0x20)
         .fault(17, 0x01)
+        // Made-up measuring groups whose values change on every read.
+        .group_cycle(
+            1,
+            &[
+                &[(0x01, 0x10, 0x20), (0x07, 0x00, 0x64)],
+                &[(0x01, 0x10, 0x28), (0x07, 0x00, 0x65)],
+                &[(0x01, 0x10, 0x30), (0x07, 0x00, 0x66)],
+            ],
+        )
+        .group(2, &[(0x05, 0x00, 0x80)])
 }
 
 /// The virtual KW1281 module with its session already open.
