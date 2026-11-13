@@ -7,9 +7,11 @@ use clap::{Args, Parser, Subcommand};
 use opendiag_core::Error;
 use opendiag_data::{json_schema_pretty, load_dir, DataSet};
 use opendiag_proto::clock::SystemClock;
+use opendiag_proto::isotp::{Config as IsoTpConfig, IsoTpLink};
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig, KwpService};
 use opendiag_proto::tp20::{Tp20Config, Tp20KwpClient, Tp20Link};
+use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_services::demo::{
     virtual_ecu_bus, virtual_kw1281_bus, virtual_kw1281_module_over, virtual_kwp_bus,
     virtual_kwp_module_over, virtual_uds_client_over, TESTER_ID,
@@ -20,7 +22,8 @@ use opendiag_services::{
     Limit, LogConfig, Module, Report, ReportFault, WriteConfirmation,
 };
 use opendiag_transport::{
-    list_serial_ports, open_can, KLineSerial, TraceStatus, Tracing, Transport,
+    list_serial_ports, open_can, Elm327, Elm327Emulator, Elm327Serial, KLineSerial, SerialIo,
+    TraceStatus, Tracing, Transport,
 };
 
 /// Open source VAG group diagnostic tool.
@@ -142,6 +145,11 @@ enum Cmd {
 fn parse_hex_u8(s: &str) -> Result<u8, String> {
     let digits = s.trim_start_matches("0x").trim_start_matches("0X");
     u8::from_str_radix(digits, 16).map_err(|_| format!("`{s}` is not a hex byte (e.g. 0x01)"))
+}
+
+fn parse_hex_u32(s: &str) -> Result<u32, String> {
+    let digits = s.trim_start_matches("0x").trim_start_matches("0X");
+    u32::from_str_radix(digits, 16).map_err(|_| format!("`{s}` is not a hex number (e.g. 0x7E0)"))
 }
 
 /// The 24-bit workshop code a module expects with a write (module-specific; you supply it).
@@ -267,6 +275,22 @@ struct Target {
     /// Record every byte sent and received to this file (see docs/capture.md).
     #[arg(long)]
     trace: Option<PathBuf>,
+    /// UDS over CAN through an ELM327-style adapter on this serial port, e.g. COM4.
+    /// Degraded: 11-bit ids only, slow, many clones are flaky. Read docs/elm327.md.
+    #[arg(long)]
+    elm327: Option<String>,
+    /// Use the built-in virtual UDS ECU behind a software ELM327 (no adapter or car needed).
+    #[arg(long)]
+    simulate_elm327: bool,
+    /// With --elm327: the adapter's serial baud rate (38400 is the usual default).
+    #[arg(long, default_value_t = 38400)]
+    elm_baud: u32,
+    /// With --elm327: CAN id the tester sends requests on, in hex.
+    #[arg(long, default_value = "0x7E0", value_parser = parse_hex_u32)]
+    tester_id: u32,
+    /// With --elm327: CAN id the module answers on, in hex.
+    #[arg(long, default_value = "0x7E8", value_parser = parse_hex_u32)]
+    ecu_id: u32,
 }
 
 fn main() -> ExitCode {
@@ -544,6 +568,51 @@ fn probe(port: &str, address: u8, baud: u32, trace: Option<&Path>) -> Result<(),
 }
 
 /// KWP2000 over a TP2.0 channel on a CAN interface (Linux only).
+/// UDS over ISO-TP on a CAN-capable transport, with real timing.
+fn uds_module(transport: Box<dyn Transport>, tester: u32, ecu: u32) -> Box<dyn Module> {
+    let link = IsoTpLink::new(
+        transport,
+        SystemClock::new(),
+        tester,
+        ecu,
+        IsoTpConfig::default(),
+    );
+    Box::new(UdsClient::new(link, UdsConfig::default()))
+}
+
+/// UDS through an ELM327-style adapter (real port, or the built-in emulator).
+fn connect_elm327(target: &Target) -> Result<Connection, String> {
+    if target.simulate_elm327 {
+        eprintln!("[simulated] virtual UDS ECU behind a software ELM327");
+        elm327_session(Elm327::new(Elm327Emulator::new(virtual_ecu_bus())), target)
+    } else {
+        let port = target.elm327.as_deref().unwrap_or_default();
+        let adapter = Elm327Serial::open(port, target.elm_baud).map_err(|e| e.to_string())?;
+        elm327_session(adapter, target)
+    }
+}
+
+fn elm327_session<P: SerialIo + 'static>(
+    mut adapter: Elm327<P>,
+    target: &Target,
+) -> Result<Connection, String> {
+    eprintln!(
+        "Setting up the adapter (tester {:#05X}, module {:#05X})...",
+        target.tester_id, target.ecu_id
+    );
+    adapter
+        .init(target.tester_id, target.ecu_id)
+        .map_err(|e| e.to_string())?;
+    if let Some(v) = adapter.version() {
+        eprintln!("Adapter: {v}");
+    }
+    let (transport, report) = trace_transport(adapter, target.trace.as_deref())?;
+    Ok(Connection {
+        module: uds_module(transport, target.tester_id, target.ecu_id),
+        _trace: report,
+    })
+}
+
 fn connect_tp20(iface: &str, target: &Target) -> Result<Connection, String> {
     let can = open_can(iface).map_err(|e| e.to_string())?;
     let (transport, report) = trace_transport(can, target.trace.as_deref())?;
@@ -593,6 +662,12 @@ fn connect(target: &Target) -> Result<Connection, String> {
             module: Box::new(virtual_kwp_module_over(transport).map_err(|e| e.to_string())?),
             _trace: report,
         });
+    }
+    if target.simulate_elm327 || target.elm327.is_some() {
+        if target.port.is_some() || target.can.is_some() {
+            return Err("choose one of --port, --can or --elm327".into());
+        }
+        return connect_elm327(target);
     }
     if let Some(iface) = &target.can {
         if target.port.is_some() {
@@ -751,6 +826,21 @@ fn describe_connection(t: &Target) -> (String, bool) {
         return ("Simulated: built-in virtual KWP2000 module".into(), true);
     }
     let addr = t.address;
+    if t.simulate_elm327 {
+        return (
+            "Simulated: built-in virtual UDS ECU behind a software ELM327".into(),
+            true,
+        );
+    }
+    if let Some(port) = &t.elm327 {
+        return (
+            format!(
+                "ELM327-style adapter on {port} at {} baud, UDS over CAN, tester {:#05X}, module {:#05X}",
+                t.elm_baud, t.tester_id, t.ecu_id
+            ),
+            false,
+        );
+    }
     if let Some(iface) = &t.can {
         return (
             format!("CAN interface {iface}, KWP2000 over TP2.0, module {addr:#04X}"),

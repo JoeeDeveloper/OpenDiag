@@ -1104,3 +1104,37 @@ fn data_lookup_finds_known_codes_and_rejects_unknown_ones() {
         .unwrap();
     assert!(!bad.status.success());
 }
+
+// ---- ELM327 adapter path (software adapter in front of the virtual UDS ECU) ----
+
+#[test]
+fn elm327_simulation_gives_the_same_codes_as_the_direct_simulation() {
+    let (ok_direct, direct, _) = run(&["dtc", "read", "--simulate"], "");
+    let (ok_elm, elm, err) = run(&["dtc", "read", "--simulate-elm327"], "");
+    assert!(ok_direct && ok_elm, "{err}");
+    assert_eq!(direct, elm);
+    assert!(
+        err.contains("[simulated]") && err.contains("ELM327"),
+        "{err}"
+    );
+}
+
+#[test]
+fn elm327_simulation_scan_and_report_are_marked_simulated() {
+    let (ok, out, err) = run(&["scan", "--simulate-elm327"], "");
+    assert!(ok, "{err}");
+    assert!(!out.is_empty());
+    let (ok, html, err) = run(&["report", "--simulate-elm327"], "");
+    assert!(ok, "{err}");
+    assert!(
+        html.contains("SIMULATED"),
+        "report must carry the simulated banner"
+    );
+}
+
+#[test]
+fn elm327_options_conflict_with_other_connections() {
+    let (ok, _, err) = run(&["scan", "--simulate-elm327", "--port", "COM1"], "");
+    assert!(!ok);
+    assert!(err.contains("choose one of"), "{err}");
+}

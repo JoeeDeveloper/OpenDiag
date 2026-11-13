@@ -88,6 +88,15 @@ built-in browser against the simulator and rendered with no console errors. **No
 small screens, a long live session, any real module. It has no write features by design, and live data is KW1281
 only. See [web.md](web.md).
 
+## ELM327 adapters
+
+`--elm327 <PORT>` carries UDS over CAN through an ELM327-style adapter, with raw frames and our own ISO-TP. It is
+tested against a software emulator of the adapter (`Elm327Emulator`) running the full UDS stack, and against
+scripted error cases (unsupported commands, error lines, malformed output, a silent device). **It has never
+talked to a real adapter**, and the emulator is our own reading of the data sheet, so a shared mistake would pass
+every test. Known limits: 11-bit ids only, slow, long replies can overflow the adapter's buffer, clones differ.
+No K-line through these adapters. See [elm327.md](elm327.md).
+
 ## Not started (from the plan)
 
 J2534 and ELM327 transports, PCAN, coding/adaptation/output tests, backup/restore,

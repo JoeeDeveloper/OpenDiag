@@ -1,6 +1,7 @@
 //! Transport layer: the `Transport` trait plus hardware-free implementations
 //! (`Simulator`, `Replay`). Real drivers (SocketCAN, K-line) come later.
 
+mod elm327;
 mod replay;
 mod serial;
 mod simulator;
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 use opendiag_core::Result;
 
+pub use elm327::{Elm327, Elm327Emulator, Elm327Serial};
 pub use replay::Replay;
 pub use serial::{list_serial_ports, KLine, KLineSerial, PortInfo, SerialIo};
 pub use simulator::Simulator;
