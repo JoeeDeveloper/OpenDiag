@@ -1138,3 +1138,25 @@ fn elm327_options_conflict_with_other_connections() {
     assert!(!ok);
     assert!(err.contains("choose one of"), "{err}");
 }
+
+#[test]
+fn doctor_prints_a_summary_and_writes_it_to_a_file_without_a_vin() {
+    let out = std::env::temp_dir().join(format!("opendiag-doctor-{}.txt", std::process::id()));
+    let (ok, stdout, err) = run(&["doctor", "--out", out.to_str().unwrap()], "");
+    assert!(ok, "{err}");
+    for want in [
+        "version:",
+        "platform:",
+        "self-check: KW1281 virtual module OK",
+        "self-check: UDS virtual module OK",
+        "self-check: KWP2000 virtual module OK",
+        "says nothing about your cable",
+    ] {
+        assert!(stdout.contains(want), "missing {want:?} in {stdout}");
+    }
+    let file = std::fs::read_to_string(&out).unwrap();
+    std::fs::remove_file(&out).ok();
+    assert_eq!(file, stdout);
+    // The summary is for sharing: it must not contain identification from modules.
+    assert!(!stdout.contains("DEMO-KW-0001") && !stdout.contains("VIRTUAL ENGINE ECU"));
+}

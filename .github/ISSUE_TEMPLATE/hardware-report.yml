@@ -1,0 +1,61 @@
+name: Hardware test report
+description: Report what happened when you tried OpenDiag on a real vehicle or bench module (read-only tests).
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Please read [docs/testing-guide.md](../blob/main/docs/testing-guide.md) first and only run read-only commands.
+        **Check any trace file for your VIN and other identification before attaching it.**
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Worked as expected
+        - Partly worked
+        - Failed to connect
+        - Wrong or strange data
+        - Crashed or hung
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: OpenDiag version (from `opendiag --version`)
+    validations:
+      required: true
+  - type: textarea
+    id: vehicle
+    attributes:
+      label: Vehicle and module
+      description: Make, model, year, engine, module address (for example 0x01), protocol if you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Cable or adapter and computer
+      description: Cable/adapter model, operating system, whether you used `--no-echo` or a non-default baud rate.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run and their output
+      description: Paste the exact commands and the complete output, errors included.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: doctor.txt and trace files
+      description: Drag files here. Redact VINs first if you prefer.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: I only ran read-only commands (no `dtc clear`, `adaptation set` or `backup restore`).
+          required: true

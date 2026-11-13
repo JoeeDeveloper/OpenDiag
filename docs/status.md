@@ -113,6 +113,8 @@ the Tauri GUI, packaging/signing, vehicle profiles, mdBook docs, WASM plugins.
 
 ## First hardware session: a safe checklist
 
+(Testers: the fuller walk-through is [testing-guide.md](testing-guide.md).)
+
 Use a **bench module** (out of the car, powered from a 12 V supply, K-line wired to the cable) or a car with
 the ignition on and engine off. Read-only steps only.
 

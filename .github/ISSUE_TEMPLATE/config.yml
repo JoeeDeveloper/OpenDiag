@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Testing guide
+    url: https://github.com/JoeeDeveloper/OpenDiag/blob/main/docs/testing-guide.md
+    about: How to test OpenDiag safely on a real vehicle before reporting.

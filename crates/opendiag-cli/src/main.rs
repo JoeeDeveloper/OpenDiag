@@ -96,6 +96,13 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         listen_port: u16,
     },
+    /// Print a support summary (version, OS, serial ports, data files, simulator self-check) for bug
+    /// reports. Sends nothing to any vehicle or adapter and contains no VIN.
+    Doctor {
+        /// Also write the summary to this file, to attach to an issue.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// List serial ports (to find your K-line cable).
     Ports,
     /// Read-only K-line check: fast init + StartCommunication + TesterPresent.
@@ -371,6 +378,7 @@ fn main() -> ExitCode {
             target,
             listen_port,
         }) => serve_cmd(&target, listen_port),
+        Some(Cmd::Doctor { out }) => doctor(out.as_deref()),
         Some(Cmd::Ports) => ports(),
         Some(Cmd::Probe {
             port,
@@ -407,6 +415,92 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Support summary for bug reports. Read-only and offline: it opens no port,
+/// only lists them, and runs the built-in virtual modules.
+fn doctor(out: Option<&Path>) -> Result<(), String> {
+    use std::fmt::Write as _;
+    let mut t = String::new();
+    let _ = writeln!(t, "OpenDiag support summary");
+    let _ = writeln!(t, "version:   {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(
+        t,
+        "platform:  {} / {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    match load_data() {
+        Some(d) => {
+            let _ = writeln!(
+                t,
+                "data:      {} module(s), {} code(s), {} measuring block(s)",
+                d.module_count(),
+                d.dtc_count(),
+                d.block_count()
+            );
+        }
+        None => {
+            let _ = writeln!(
+                t,
+                "data:      none found (run from the unpacked folder, or set OPENDIAG_DATA)"
+            );
+        }
+    }
+    match list_serial_ports() {
+        Ok(p) if p.is_empty() => {
+            let _ = writeln!(
+                t,
+                "ports:     none found (cable not plugged in, or no driver?)"
+            );
+        }
+        Ok(p) => {
+            for (i, port) in p.iter().enumerate() {
+                let label = if i == 0 { "ports:    " } else { "          " };
+                let _ = writeln!(t, "{label} {} - {}", port.name, port.description);
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(t, "ports:     cannot list ({e})");
+        }
+    }
+    // Simulator self-check: proves this build's protocol code runs on this machine.
+    let checks: [(&str, Result<(), String>); 3] = [
+        ("KW1281", {
+            virtual_kw1281_module_over(virtual_kw1281_bus())
+                .map_err(|e| e.to_string())
+                .and_then(|mut m| m.read_dtcs().map(|_| ()).map_err(|e| e.to_string()))
+        }),
+        ("KWP2000", {
+            virtual_kwp_module_over(virtual_kwp_bus())
+                .map_err(|e| e.to_string())
+                .and_then(|mut m| m.read_dtcs().map(|_| ()).map_err(|e| e.to_string()))
+        }),
+        ("UDS", {
+            let mut m = virtual_uds_client_over(virtual_ecu_bus());
+            m.read_dtcs().map(|_| ()).map_err(|e| e.to_string())
+        }),
+    ];
+    for (name, r) in checks {
+        match r {
+            Ok(()) => {
+                let _ = writeln!(t, "self-check: {name} virtual module OK");
+            }
+            Err(e) => {
+                let _ = writeln!(t, "self-check: {name} virtual module FAILED: {e}");
+            }
+        }
+    }
+    let _ = writeln!(
+        t,
+        "note:      the self-check uses built-in virtual modules; it says nothing about your cable or vehicle."
+    );
+    print!("{t}");
+    if let Some(path) = out {
+        std::fs::write(path, &t).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        eprintln!("Wrote {}", path.display());
+    }
+    Ok(())
 }
 
 fn ports() -> Result<(), String> {

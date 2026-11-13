@@ -11,7 +11,7 @@ An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi
 | Protocols | ISO-TP, UDS, KWP2000 (K-line), KW1281 (5-baud init), TP2.0, all against simulators |
 | Transports | Serial K-line (Windows/Linux/macOS), SocketCAN (Linux), ELM327-style adapters (degraded, UDS over 11-bit CAN), Simulator, Replay |
 | Modules | `scan` and `dtc read/clear` work on KW1281 (`--slow-init`), KWP2000 on K-line (`--fast-init`) and KWP2000 over TP2.0 on CAN (`--can`, Linux); live data and adaptation are KW1281 only |
-| CLI | `scan`, `dtc read/clear`, `report` (standalone HTML), `serve` (read-only local web page), `log` (live data to CSV), `adaptation read/set`, `backup list/restore`, `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
+| CLI | `scan`, `dtc read/clear`, `report` (standalone HTML), `serve` (read-only local web page), `doctor` (support summary), `log` (live data to CSV), `adaptation read/set`, `backup list/restore`, `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
 | Data | Open YAML format with validator and generated JSON Schema (CC0-1.0) |
 
 ## Install
@@ -43,6 +43,14 @@ It shows identification, fault codes and raw live data. It cannot clear codes or
 `report` writes one self-contained HTML file (no scripts, nothing loaded from the network, dark mode and print
 styles included). Print it to PDF from your browser to share it. It may contain a VIN, so read it before sending it
 on. Reports from the built-in virtual modules carry a "SIMULATED DATA" banner.
+
+## Help wanted: testers with a car
+
+OpenDiag has never been run against a real vehicle, and the author cannot test on one for a long time. If you
+have a K-line cable, a SocketCAN adapter or an ELM327-style adapter and a car, a careful **read-only** test and a
+report is the most useful contribution possible. Start with [docs/testing-guide.md](docs/testing-guide.md); it
+covers what to run, what to attach and what never to run. `opendiag doctor --out doctor.txt` makes a summary for
+your report (it contacts nothing and contains no VIN).
 
 ## Safety
 
