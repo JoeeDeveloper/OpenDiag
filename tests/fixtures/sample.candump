@@ -1,0 +1,4 @@
+# Synthetic UDS exchange (hand-written, not captured from a vehicle).
+# Tester -> ECU: DiagnosticSessionControl(extended) ; ECU -> tester: positive response.
+(1000.000000) can0 7E0#0210030000000000
+(1000.002100) can0 7E8#065003003201F4
