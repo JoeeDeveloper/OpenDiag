@@ -9,6 +9,8 @@ pub enum Error {
     Transport(String),
     /// A protocol-level failure (malformed frame, negative response).
     Protocol(String),
+    /// No frame arrived within the allotted time.
+    Timeout,
 }
 
 impl fmt::Display for Error {
@@ -16,6 +18,7 @@ impl fmt::Display for Error {
         match self {
             Error::Transport(m) => write!(f, "transport error: {m}"),
             Error::Protocol(m) => write!(f, "protocol error: {m}"),
+            Error::Timeout => write!(f, "timed out waiting for a frame"),
         }
     }
 }

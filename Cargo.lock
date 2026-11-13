@@ -142,6 +142,9 @@ version = "0.0.1"
 [[package]]
 name = "opendiag-transport"
 version = "0.0.1"
+dependencies = [
+ "opendiag-core",
+]
 
 [[package]]
 name = "proc-macro2"
