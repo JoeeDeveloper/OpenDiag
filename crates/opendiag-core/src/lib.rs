@@ -11,6 +11,10 @@ pub enum Error {
     Protocol(String),
     /// No frame arrived within the allotted time.
     Timeout,
+    /// The ECU refused a request (UDS/KWP negative response).
+    NegativeResponse { service: u8, nrc: u8 },
+    /// A write was attempted while the session is read-only.
+    WritesLocked(String),
 }
 
 impl fmt::Display for Error {
@@ -19,6 +23,12 @@ impl fmt::Display for Error {
             Error::Transport(m) => write!(f, "transport error: {m}"),
             Error::Protocol(m) => write!(f, "protocol error: {m}"),
             Error::Timeout => write!(f, "timed out waiting for a frame"),
+            Error::NegativeResponse { service, nrc } => {
+                write!(f, "negative response {nrc:#04x} to service {service:#04x}")
+            }
+            Error::WritesLocked(what) => {
+                write!(f, "writes are locked (read-only mode): {what}")
+            }
         }
     }
 }
