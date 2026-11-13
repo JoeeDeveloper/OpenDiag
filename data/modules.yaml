@@ -1,0 +1,54 @@
+format: opendiag-data/0
+kind: modules
+provenance:
+  author: OpenDiag contributors
+  source: public_specification
+  license: CC0-1.0
+  verified: false
+  notes: >-
+    Diagnostic address assignments are facts that are widely published for this
+    vehicle group. Names and descriptions are original wording. Not yet checked
+    against a real vehicle; confirm and set verified to true when you have.
+entries:
+  - address: 0x01
+    name: Engine
+    description: Engine control unit.
+  - address: 0x02
+    name: Transmission
+    description: Automatic transmission control unit.
+  - address: 0x03
+    name: Brakes
+    description: Anti-lock brake and stability control unit.
+  - address: 0x08
+    name: Climate control
+    description: Air conditioning and heating control unit.
+  - address: 0x09
+    name: Central electrics
+    description: Body electrical and lighting control unit.
+  - address: 0x15
+    name: Airbag
+    description: Airbag and restraint system control unit.
+  - address: 0x17
+    name: Instrument cluster
+    description: Dashboard instrument cluster.
+  - address: 0x19
+    name: Diagnostic interface
+    description: Gateway between the diagnostic connector and the vehicle networks.
+  - address: 0x25
+    name: Immobiliser
+    description: Engine immobiliser control unit.
+  - address: 0x35
+    name: Central locking
+    description: Central locking control unit.
+  - address: 0x37
+    name: Navigation
+    description: Navigation system control unit.
+  - address: 0x44
+    name: Steering assist
+    description: Power steering control unit.
+  - address: 0x46
+    name: Central convenience
+    description: Comfort and convenience functions control unit.
+  - address: 0x56
+    name: Radio
+    description: Audio head unit.

@@ -1,7 +1,9 @@
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use opendiag_data::{json_schema_pretty, load_dir, CodeSpace, DataSet};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig};
@@ -25,6 +27,11 @@ enum Cmd {
     Dtc {
         #[command(subcommand)]
         action: DtcCmd,
+    },
+    /// Work with the open data files (module names, DTC descriptions, labels).
+    Data {
+        #[command(subcommand)]
+        action: DataCmd,
     },
     /// List serial ports (to find your K-line cable).
     Ports,
@@ -52,6 +59,14 @@ enum Cmd {
 fn parse_hex_u8(s: &str) -> Result<u8, String> {
     let digits = s.trim_start_matches("0x").trim_start_matches("0X");
     u8::from_str_radix(digits, 16).map_err(|_| format!("`{s}` is not a hex byte (e.g. 0x01)"))
+}
+
+#[derive(Subcommand)]
+enum DataCmd {
+    /// Check every data file under a directory (default: ./data).
+    Validate { path: Option<PathBuf> },
+    /// Print the JSON Schema for data files.
+    Schema,
 }
 
 #[derive(Subcommand)]
@@ -110,6 +125,15 @@ fn main() -> ExitCode {
         Some(Cmd::Dtc {
             action: DtcCmd::Clear { target, yes },
         }) => dtc_clear(&target, yes),
+        Some(Cmd::Data {
+            action: DataCmd::Validate { path },
+        }) => data_validate(path.as_deref().unwrap_or_else(|| Path::new("data"))),
+        Some(Cmd::Data {
+            action: DataCmd::Schema,
+        }) => {
+            println!("{}", json_schema_pretty());
+            Ok(())
+        }
         Some(Cmd::Ports) => ports(),
         Some(Cmd::Probe {
             port,
@@ -250,14 +274,76 @@ fn scan(target: &Target) -> Result<(), String> {
     Ok(())
 }
 
-fn print_dtcs(dtcs: &[DtcReport]) {
+fn data_validate(dir: &Path) -> Result<(), String> {
+    match load_dir(dir) {
+        Ok(set) => {
+            if set.file_count() == 0 {
+                println!("No data files found under {}.", dir.display());
+            } else {
+                println!(
+                    "OK: {} file(s), {} module(s), {} code(s), {} measuring block(s).",
+                    set.file_count(),
+                    set.module_count(),
+                    set.dtc_count(),
+                    set.block_count()
+                );
+            }
+            Ok(())
+        }
+        Err(issues) => {
+            for i in &issues {
+                eprintln!("{i}");
+            }
+            Err(format!(
+                "{} problem(s) found in {}",
+                issues.len(),
+                dir.display()
+            ))
+        }
+    }
+}
+
+/// Load descriptions from `$OPENDIAG_DATA` or `./data`, if present and valid.
+fn load_data() -> Option<DataSet> {
+    let dir = std::env::var_os("OPENDIAG_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data"));
+    if !dir.is_dir() {
+        return None;
+    }
+    match load_dir(&dir) {
+        Ok(set) => Some(set),
+        Err(issues) => {
+            eprintln!(
+                "warning: ignoring invalid data in {} ({} problem(s)); run `opendiag data validate`",
+                dir.display(),
+                issues.len()
+            );
+            None
+        }
+    }
+}
+
+/// Look up a displayed code: `P0171-00` is an SAE code, a bare 5-digit code is VAG-style.
+fn describe(data: Option<&DataSet>, text: &str) -> Option<String> {
+    let (space, code) = match text.split_once('-') {
+        Some((base, _)) => (CodeSpace::SaeJ2012, base),
+        None => (CodeSpace::Vag5Digit, text),
+    };
+    data?.dtc(space, code).map(|d| d.description.clone())
+}
+
+fn print_dtcs(dtcs: &[DtcReport], data: Option<&DataSet>) {
     if dtcs.is_empty() {
         println!("No trouble codes stored.");
         return;
     }
     for d in dtcs {
+        let meaning = describe(data, &d.text)
+            .map(|m| format!("  {m}"))
+            .unwrap_or_default();
         println!(
-            "{}  status {:#04X}  [{}]",
+            "{}  status {:#04X}  [{}]{meaning}",
             d.text,
             d.status,
             d.flags.join(", ")
@@ -267,19 +353,24 @@ fn print_dtcs(dtcs: &[DtcReport]) {
 
 fn dtc_read(target: &Target) -> Result<(), String> {
     let mut module = connect(target)?;
-    print_dtcs(&module.read_dtcs().map_err(|e| e.to_string())?);
+    let data = load_data();
+    print_dtcs(
+        &module.read_dtcs().map_err(|e| e.to_string())?,
+        data.as_ref(),
+    );
     Ok(())
 }
 
 fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
     let mut module = connect(target)?;
+    let data = load_data();
     let stored = module.read_dtcs().map_err(|e| e.to_string())?;
     if stored.is_empty() {
         println!("No trouble codes stored; nothing to clear.");
         return Ok(());
     }
     println!("About to clear {} trouble code(s):", stored.len());
-    print_dtcs(&stored);
+    print_dtcs(&stored, data.as_ref());
     if !yes && !confirm()? {
         println!("Cancelled; nothing was changed.");
         return Ok(());
@@ -291,7 +382,7 @@ fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
         "Cleared {} trouble code(s). Record of what was stored:",
         cleared.len()
     );
-    print_dtcs(&cleared);
+    print_dtcs(&cleared, data.as_ref());
     Ok(())
 }
 

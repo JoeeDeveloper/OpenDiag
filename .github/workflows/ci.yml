@@ -26,3 +26,5 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo run -p opendiag-cli -- --version
+      - name: Validate open data files
+        run: cargo run -p opendiag-cli -- data validate data

@@ -12,10 +12,14 @@ name = "opendiag"
 path = "src/main.rs"
 
 [dependencies]
+opendiag-data = { path = "../opendiag-data" }
 opendiag-proto = { path = "../opendiag-proto" }
 opendiag-services = { path = "../opendiag-services" }
 opendiag-transport = { path = "../opendiag-transport" }
 clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
 
 [lints]
 workspace = true

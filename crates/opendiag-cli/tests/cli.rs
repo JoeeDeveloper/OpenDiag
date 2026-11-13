@@ -103,6 +103,67 @@ fn slow_init_scan_reports_missing_port() {
     assert!(err.contains("cannot open"), "{err}");
 }
 
+fn data_dir() -> String {
+    format!("{}/../../data", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn data_validate_accepts_the_shipped_data() {
+    let (ok, out, err) = run(&["data", "validate", &data_dir()], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("OK:") && out.contains("14 module(s)"), "{out}");
+}
+
+#[test]
+fn data_validate_reports_problems_with_file_names_and_fails() {
+    let dir = std::env::temp_dir().join(format!("opendiag-cli-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("bad.yaml"),
+        "format: opendiag-data/0\nkind: dtcs\n",
+    )
+    .unwrap();
+    let (ok, _, err) = run(&["data", "validate", dir.to_str().unwrap()], "");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(!ok);
+    assert!(
+        err.contains("bad.yaml") && err.contains("problem(s) found"),
+        "{err}"
+    );
+}
+
+#[test]
+fn data_schema_prints_json_schema() {
+    let (ok, out, _) = run(&["data", "schema"], "");
+    assert!(ok);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert!(v.get("definitions").is_some(), "{out}");
+}
+
+#[test]
+fn dtc_read_shows_descriptions_when_data_is_available() {
+    let out = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .args(["dtc", "read", "--simulate"])
+        .env("OPENDIAG_DATA", data_dir())
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&out.stdout);
+    assert!(out.contains("Fuel mixture too lean on bank 1"), "{out}");
+    assert!(out.contains("Random or multiple cylinder misfire"), "{out}");
+}
+
+#[test]
+fn dtc_read_still_works_with_no_or_broken_data() {
+    let out = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .args(["dtc", "read", "--simulate"])
+        .env("OPENDIAG_DATA", "does-not-exist")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("P0171-00"));
+}
+
 #[test]
 fn slow_init_probe_reports_missing_port() {
     let (ok, _, err) = run(

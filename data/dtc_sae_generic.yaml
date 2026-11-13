@@ -1,0 +1,24 @@
+format: opendiag-data/0
+kind: dtcs
+provenance:
+  author: OpenDiag contributors
+  source: public_specification
+  license: CC0-1.0
+  verified: false
+  notes: >-
+    Generic powertrain codes defined by the public SAE J2012 / ISO 15031-6
+    standards. The code numbers come from the standard; the descriptions are
+    written in our own words and are deliberately short.
+entries:
+  - { code_space: sae_j2012, code: P0100, description: Mass or volume air flow sensor circuit fault }
+  - { code_space: sae_j2012, code: P0171, description: Fuel mixture too lean on bank 1 }
+  - { code_space: sae_j2012, code: P0172, description: Fuel mixture too rich on bank 1 }
+  - { code_space: sae_j2012, code: P0300, description: Random or multiple cylinder misfire detected }
+  - { code_space: sae_j2012, code: P0301, description: Misfire detected on cylinder 1 }
+  - { code_space: sae_j2012, code: P0302, description: Misfire detected on cylinder 2 }
+  - { code_space: sae_j2012, code: P0303, description: Misfire detected on cylinder 3 }
+  - { code_space: sae_j2012, code: P0304, description: Misfire detected on cylinder 4 }
+  - { code_space: sae_j2012, code: P0420, description: Catalytic converter efficiency below threshold on bank 1 }
+  - { code_space: sae_j2012, code: P0442, description: Small leak detected in the evaporative emission system }
+  - { code_space: sae_j2012, code: P0500, description: Vehicle speed sensor fault }
+  - { code_space: sae_j2012, code: P0562, description: System voltage too low }

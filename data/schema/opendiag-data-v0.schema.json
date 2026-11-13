@@ -1,0 +1,294 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "BlockDef": {
+      "additionalProperties": false,
+      "description": "Labels for one measuring-block group of one module.",
+      "properties": {
+        "cells": {
+          "description": "One entry per displayed value, in order. KW1281 groups have at most 4.",
+          "items": {
+            "$ref": "#/definitions/Cell"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "Group (block) number, 0-255.",
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "module_address": {
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "protocol": {
+          "$ref": "#/definitions/Protocol"
+        }
+      },
+      "required": [
+        "cells",
+        "group",
+        "module_address",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "Cell": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "CodeSpace": {
+      "oneOf": [
+        {
+          "description": "Generic powertrain/chassis/body/network codes like `P0171`.",
+          "enum": [
+            "sae_j2012"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Five-digit decimal codes used by older VAG modules, like `00525`.",
+          "enum": [
+            "vag_5digit"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DtcDef": {
+      "additionalProperties": false,
+      "description": "A trouble code and what it means, in the author's own words.",
+      "properties": {
+        "code": {
+          "description": "`P0171` for `sae_j2012`, `00525` for `vag_5digit`.",
+          "type": "string"
+        },
+        "code_space": {
+          "$ref": "#/definitions/CodeSpace"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "code_space",
+        "description"
+      ],
+      "type": "object"
+    },
+    "ModuleDef": {
+      "additionalProperties": false,
+      "description": "A control module, identified by its diagnostic address.",
+      "properties": {
+        "address": {
+          "description": "Diagnostic address, e.g. `0x01`.",
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "platforms": {
+          "default": [],
+          "description": "Platforms this applies to (e.g. `PQ24`). Empty means \"not stated\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "protocols": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Protocol"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "address",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Protocol": {
+      "enum": [
+        "kw1281",
+        "kwp2000",
+        "uds",
+        "tp20"
+      ],
+      "type": "string"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Where the data came from. Required on every file, so provenance can be audited.",
+      "properties": {
+        "author": {
+          "description": "Who wrote or captured this data.",
+          "type": "string"
+        },
+        "captured_on": {
+          "description": "Date of capture (`YYYY-MM-DD`). Required when `source` is `own_vehicle_capture`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "license": {
+          "description": "SPDX id of the data licence: `CC0-1.0`, `CC-BY-4.0` or `GPL-3.0-or-later`.",
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/Source"
+        },
+        "verified": {
+          "default": false,
+          "description": "True only once the data has been checked against a real vehicle. Defaults to false.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "author",
+        "license",
+        "source"
+      ],
+      "type": "object"
+    },
+    "Source": {
+      "oneOf": [
+        {
+          "description": "Written from scratch by the author.",
+          "enum": [
+            "original_work"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Captured by the author from their own vehicle.",
+          "enum": [
+            "own_vehicle_capture"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Facts taken from a public specification or standard, in the author's own words.",
+          "enum": [
+            "public_specification"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "One YAML data file: a header, who it came from, and a list of entries of one kind.",
+  "oneOf": [
+    {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/ModuleDef"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "modules"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries",
+        "kind"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/DtcDef"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "dtcs"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries",
+        "kind"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/BlockDef"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "measuring_blocks"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries",
+        "kind"
+      ],
+      "type": "object"
+    }
+  ],
+  "properties": {
+    "format": {
+      "description": "Must be `opendiag-data/0`.",
+      "type": "string"
+    },
+    "provenance": {
+      "$ref": "#/definitions/Provenance"
+    }
+  },
+  "required": [
+    "format",
+    "provenance"
+  ],
+  "title": "DataFile",
+  "type": "object"
+}
