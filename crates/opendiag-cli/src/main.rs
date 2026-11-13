@@ -2,8 +2,10 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use opendiag_proto::kwp::{KwpClient, KwpConfig};
 use opendiag_services::demo::{virtual_uds_client, VirtualClient, TESTER_ID};
 use opendiag_services::{clear_dtcs, identify, read_dtcs, ClearConfirmation, DtcReport};
+use opendiag_transport::{list_serial_ports, KLineSerial};
 
 /// Open source VAG group diagnostic tool.
 #[derive(Parser)]
@@ -22,6 +24,25 @@ enum Cmd {
         #[command(subcommand)]
         action: DtcCmd,
     },
+    /// List serial ports (to find your K-line cable).
+    Ports,
+    /// Read-only K-line check: fast init + StartCommunication + TesterPresent.
+    Probe {
+        /// Serial port, e.g. COM3 or /dev/ttyUSB0 (see `opendiag ports`).
+        #[arg(long)]
+        port: String,
+        /// Module address in hex, e.g. 0x01 for the engine ECU.
+        #[arg(long, default_value = "0x01", value_parser = parse_hex_u8)]
+        address: u8,
+        /// Serial baud rate.
+        #[arg(long, default_value_t = 10400)]
+        baud: u32,
+    },
+}
+
+fn parse_hex_u8(s: &str) -> Result<u8, String> {
+    let digits = s.trim_start_matches("0x").trim_start_matches("0X");
+    u8::from_str_radix(digits, 16).map_err(|_| format!("`{s}` is not a hex byte (e.g. 0x01)"))
 }
 
 #[derive(Subcommand)]
@@ -62,6 +83,12 @@ fn main() -> ExitCode {
         Some(Cmd::Dtc {
             action: DtcCmd::Clear { target, yes },
         }) => dtc_clear(&target, yes),
+        Some(Cmd::Ports) => ports(),
+        Some(Cmd::Probe {
+            port,
+            address,
+            baud,
+        }) => probe(&port, address, baud),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -70,6 +97,37 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn ports() -> Result<(), String> {
+    let ports = list_serial_ports().map_err(|e| e.to_string())?;
+    if ports.is_empty() {
+        println!("No serial ports found. Is the cable plugged in and its driver installed?");
+    }
+    for p in ports {
+        println!("{:<12} {}", p.name, p.description);
+    }
+    Ok(())
+}
+
+/// Read-only handshake with one module over a K-line cable.
+fn probe(port: &str, address: u8, baud: u32) -> Result<(), String> {
+    let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
+    let mut kwp = KwpClient::new(transport, KwpConfig::new(address));
+    println!("Fast init to module {address:#04X} on {port} at {baud} baud...");
+    let kb = kwp.start_communication().map_err(|e| {
+        format!(
+            "{e}\nNo answer to fast init. Many older VAG modules use 5-baud slow init \
+             (KW1281 / slow KWP2000), which is not implemented yet."
+        )
+    })?;
+    println!(
+        "StartCommunication OK, key bytes {:#04X} {:#04X}",
+        kb.kb1, kb.kb2
+    );
+    kwp.tester_present().map_err(|e| e.to_string())?;
+    println!("TesterPresent OK. The cable and module are talking.");
+    Ok(())
 }
 
 type Uds = VirtualClient;

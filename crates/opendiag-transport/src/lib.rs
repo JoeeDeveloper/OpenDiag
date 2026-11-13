@@ -2,6 +2,7 @@
 //! (`Simulator`, `Replay`). Real drivers (SocketCAN, K-line) come later.
 
 mod replay;
+mod serial;
 mod simulator;
 
 use std::time::Duration;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use opendiag_core::Result;
 
 pub use replay::Replay;
+pub use serial::{list_serial_ports, KLine, KLineSerial, PortInfo, SerialIo};
 pub use simulator::Simulator;
 
 /// A unit of data on the wire.

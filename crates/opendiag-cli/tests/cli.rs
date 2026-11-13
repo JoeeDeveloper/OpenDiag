@@ -42,6 +42,23 @@ fn dtc_read_lists_codes() {
 }
 
 #[test]
+fn ports_command_runs_without_hardware() {
+    let (ok, _, err) = run(&["ports"], "");
+    assert!(ok, "{err}");
+}
+
+#[test]
+fn probe_reports_missing_port_and_rejects_bad_address() {
+    let (ok, _, err) = run(&["probe", "--port", "NOPE-DOES-NOT-EXIST"], "");
+    assert!(!ok);
+    assert!(err.contains("cannot open"), "{err}");
+
+    let (ok, _, err) = run(&["probe", "--port", "X", "--address", "zz"], "");
+    assert!(!ok);
+    assert!(err.contains("not a hex byte"), "{err}");
+}
+
+#[test]
 fn hardware_mode_is_refused_for_now() {
     let (ok, _, err) = run(&["scan"], "");
     assert!(!ok);
