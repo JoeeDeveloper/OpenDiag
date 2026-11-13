@@ -134,6 +134,9 @@ version = "0.0.1"
 [[package]]
 name = "opendiag-proto"
 version = "0.0.1"
+dependencies = [
+ "opendiag-core",
+]
 
 [[package]]
 name = "opendiag-services"
