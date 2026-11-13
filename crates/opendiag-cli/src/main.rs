@@ -1,18 +1,24 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
+use opendiag_core::Error;
 use opendiag_data::{json_schema_pretty, load_dir, CodeSpace, DataSet};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig};
-use opendiag_services::demo::{virtual_kw1281_module, virtual_uds_client, TESTER_ID};
+use opendiag_services::demo::{
+    virtual_ecu_bus, virtual_kw1281_bus, virtual_kw1281_module_over, virtual_uds_client_over,
+    TESTER_ID,
+};
 use opendiag_services::{
     log_csv, ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module,
 };
-use opendiag_transport::{list_serial_ports, KLineSerial};
+use opendiag_transport::{
+    list_serial_ports, open_can, KLineSerial, TraceStatus, Tracing, Transport,
+};
 
 /// Open source VAG group diagnostic tool.
 #[derive(Parser)]
@@ -76,6 +82,29 @@ enum Cmd {
         /// With --slow-init: the cable does not echo transmitted bytes.
         #[arg(long)]
         no_echo: bool,
+        /// Record every byte sent and received to this file (see docs/capture.md).
+        #[arg(long)]
+        trace: Option<PathBuf>,
+    },
+    /// Passively record bus traffic to a trace file (K-line serial port or Linux CAN interface).
+    /// Sends nothing. Stop with Ctrl-C or --duration-secs; the file is valid at any point.
+    #[command(group = clap::ArgGroup::new("source").required(true).args(["port", "can"]))]
+    Capture {
+        /// Serial port to listen on, e.g. COM3 (receive only).
+        #[arg(long)]
+        port: Option<String>,
+        /// CAN interface to listen on, e.g. can0 (Linux only).
+        #[arg(long)]
+        can: Option<String>,
+        /// Serial baud rate (with --port).
+        #[arg(long, default_value_t = 10400)]
+        baud: u32,
+        /// Stop after this many seconds (default: run until Ctrl-C).
+        #[arg(long)]
+        duration_secs: Option<u64>,
+        /// File to write the trace to.
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -129,6 +158,9 @@ struct Target {
     /// The cable does not echo transmitted bytes.
     #[arg(long)]
     no_echo: bool,
+    /// Record every byte sent and received to this file (see docs/capture.md).
+    #[arg(long)]
+    trace: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -183,13 +215,27 @@ fn main() -> ExitCode {
             baud,
             slow_init,
             no_echo,
+            trace,
         }) => {
             if slow_init {
-                probe_kw1281(&port, address, baud, !no_echo)
+                probe_kw1281(&port, address, baud, !no_echo, trace.as_deref())
             } else {
-                probe(&port, address, baud)
+                probe(&port, address, baud, trace.as_deref())
             }
         }
+        Some(Cmd::Capture {
+            port,
+            can,
+            baud,
+            duration_secs,
+            out,
+        }) => capture_cmd(
+            port.as_deref(),
+            can.as_deref(),
+            baud,
+            duration_secs.map(Duration::from_secs),
+            &out,
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -211,9 +257,106 @@ fn ports() -> Result<(), String> {
     Ok(())
 }
 
+/// Prints how a trace went when dropped, i.e. after the session has been closed
+/// and its last bytes recorded. Declare it before whatever owns the traced transport.
+struct TraceReport {
+    status: TraceStatus,
+    path: PathBuf,
+}
+
+impl Drop for TraceReport {
+    fn drop(&mut self) {
+        eprintln!(
+            "Trace: {} event(s) written to {}",
+            self.status.events(),
+            self.path.display()
+        );
+        if let Some(e) = self.status.error() {
+            eprintln!("warning: the trace is incomplete: {e}");
+        }
+    }
+}
+
+/// Box `inner`, recording a trace of everything it does when a path is given.
+fn trace_transport<T: Transport + 'static>(
+    inner: T,
+    path: Option<&Path>,
+) -> Result<(Box<dyn Transport>, Option<TraceReport>), String> {
+    let Some(path) = path else {
+        return Ok((Box::new(inner), None));
+    };
+    let file = std::fs::File::create(path)
+        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    let tracing = Tracing::new(inner, io::BufWriter::new(file));
+    let report = TraceReport {
+        status: tracing.status(),
+        path: path.to_path_buf(),
+    };
+    Ok((Box::new(tracing), Some(report)))
+}
+
+/// An open module plus the trace report that must be printed after it closes.
+/// Fields drop in order, so the module (and its goodbye bytes) go first.
+struct Connection {
+    module: Box<dyn Module>,
+    _trace: Option<TraceReport>,
+}
+
+/// Passive capture: record everything heard on a bus, send nothing.
+fn capture_cmd(
+    port: Option<&str>,
+    can: Option<&str>,
+    baud: u32,
+    duration: Option<Duration>,
+    out: &Path,
+) -> Result<(), String> {
+    let source: Box<dyn Transport> = match (port, can) {
+        (Some(p), _) => Box::new(KLineSerial::open(p, baud).map_err(|e| e.to_string())?),
+        (None, Some(i)) => open_can(i).map_err(|e| e.to_string())?,
+        (None, None) => return Err("choose --port or --can".into()),
+    };
+    let file =
+        std::fs::File::create(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    // Silence between frames is the normal state on a quiet bus; don't log it.
+    let mut tracer = Tracing::new(source, io::BufWriter::new(file)).log_timeouts(false);
+    let status = tracer.status();
+    eprintln!(
+        "Listening (send nothing). Writing to {}. {}",
+        out.display(),
+        if duration.is_some() {
+            "Stops by itself."
+        } else {
+            "Press Ctrl-C to stop; the file is valid at any point."
+        }
+    );
+    let deadline = duration.map(|d| Instant::now() + d);
+    while !deadline.is_some_and(|d| Instant::now() >= d) {
+        match tracer.recv(Duration::from_millis(100)) {
+            Ok(_) | Err(Error::Timeout) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        if let Some(e) = status.error() {
+            return Err(format!("cannot write the trace: {e}"));
+        }
+    }
+    eprintln!(
+        "Captured {} event(s) to {}.",
+        status.events(),
+        out.display()
+    );
+    Ok(())
+}
+
 /// Read-only KW1281 session: 5-baud init, identification, fault codes, then end.
-fn probe_kw1281(port: &str, address: u8, baud: u32, echo: bool) -> Result<(), String> {
-    let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
+fn probe_kw1281(
+    port: &str,
+    address: u8,
+    baud: u32,
+    echo: bool,
+    trace: Option<&Path>,
+) -> Result<(), String> {
+    let serial = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
+    let (transport, _report) = trace_transport(serial, trace)?;
     let cfg = Kw1281Config {
         echo,
         ..Kw1281Config::default()
@@ -241,8 +384,9 @@ fn probe_kw1281(port: &str, address: u8, baud: u32, echo: bool) -> Result<(), St
 }
 
 /// Read-only handshake with one module over a K-line cable (fast init, KWP2000).
-fn probe(port: &str, address: u8, baud: u32) -> Result<(), String> {
-    let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
+fn probe(port: &str, address: u8, baud: u32, trace: Option<&Path>) -> Result<(), String> {
+    let serial = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
+    let (transport, _report) = trace_transport(serial, trace)?;
     let mut kwp = KwpClient::new(transport, KwpConfig::new(address));
     println!("Fast init to module {address:#04X} on {port} at {baud} baud...");
     let kb = kwp.start_communication().map_err(|e| {
@@ -261,16 +405,23 @@ fn probe(port: &str, address: u8, baud: u32) -> Result<(), String> {
 }
 
 /// Open whichever module the flags select. Only K-line KW1281 hardware is wired up so far.
-fn connect(target: &Target) -> Result<Box<dyn Module>, String> {
+fn connect(target: &Target) -> Result<Connection, String> {
+    let trace = target.trace.as_deref();
     if target.simulate {
         eprintln!("[simulated] virtual UDS ECU, tester id {TESTER_ID:#05X}");
-        return Ok(Box::new(virtual_uds_client()));
+        let (transport, report) = trace_transport(virtual_ecu_bus(), trace)?;
+        return Ok(Connection {
+            module: Box::new(virtual_uds_client_over(transport)),
+            _trace: report,
+        });
     }
     if target.simulate_kw1281 {
         eprintln!("[simulated] virtual KW1281 module");
-        return Ok(Box::new(
-            virtual_kw1281_module().map_err(|e| e.to_string())?,
-        ));
+        let (transport, report) = trace_transport(virtual_kw1281_bus(), trace)?;
+        return Ok(Connection {
+            module: Box::new(virtual_kw1281_module_over(transport).map_err(|e| e.to_string())?),
+            _trace: report,
+        });
     }
     let Some(port) = &target.port else {
         return Err(
@@ -285,7 +436,8 @@ fn connect(target: &Target) -> Result<Box<dyn Module>, String> {
                 .into(),
         );
     }
-    let transport = KLineSerial::open(port, target.baud).map_err(|e| e.to_string())?;
+    let serial = KLineSerial::open(port, target.baud).map_err(|e| e.to_string())?;
+    let (transport, report) = trace_transport(serial, trace)?;
     let cfg = Kw1281Config {
         echo: !target.no_echo,
         ..Kw1281Config::default()
@@ -295,14 +447,15 @@ fn connect(target: &Target) -> Result<Box<dyn Module>, String> {
         "5-baud slow init to module {:#04X} on {port} at {} baud (about 2 s)...",
         target.address, target.baud
     );
-    Ok(Box::new(
-        Kw1281Module::connect(client, target.address).map_err(|e| e.to_string())?,
-    ))
+    Ok(Connection {
+        module: Box::new(Kw1281Module::connect(client, target.address).map_err(|e| e.to_string())?),
+        _trace: report,
+    })
 }
 
 fn scan(target: &Target) -> Result<(), String> {
-    let mut module = connect(target)?;
-    let ident = module.identify().map_err(|e| e.to_string())?;
+    let mut conn = connect(target)?;
+    let ident = conn.module.identify().map_err(|e| e.to_string())?;
     let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not supported)".into());
     println!("Part number      : {}", show(&ident.part_number));
     // KW1281 modules report free-form lines instead of the standard items.
@@ -317,8 +470,8 @@ fn scan(target: &Target) -> Result<(), String> {
 }
 
 fn log_cmd(target: &Target, cfg: &LogConfig, out: Option<&Path>) -> Result<(), String> {
-    let mut module = connect(target)?;
-    let live = module.live().ok_or(
+    let mut conn = connect(target)?;
+    let live = conn.module.live().ok_or(
         "live data is only available for KW1281 modules so far (use --simulate-kw1281 or --slow-init)",
     )?;
     let clock = SystemClock::new();
@@ -419,19 +572,19 @@ fn print_dtcs(dtcs: &[DtcReport], data: Option<&DataSet>) {
 }
 
 fn dtc_read(target: &Target) -> Result<(), String> {
-    let mut module = connect(target)?;
+    let mut conn = connect(target)?;
     let data = load_data();
     print_dtcs(
-        &module.read_dtcs().map_err(|e| e.to_string())?,
+        &conn.module.read_dtcs().map_err(|e| e.to_string())?,
         data.as_ref(),
     );
     Ok(())
 }
 
 fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
-    let mut module = connect(target)?;
+    let mut conn = connect(target)?;
     let data = load_data();
-    let stored = module.read_dtcs().map_err(|e| e.to_string())?;
+    let stored = conn.module.read_dtcs().map_err(|e| e.to_string())?;
     if stored.is_empty() {
         println!("No trouble codes stored; nothing to clear.");
         return Ok(());
@@ -442,7 +595,8 @@ fn dtc_clear(target: &Target, yes: bool) -> Result<(), String> {
         println!("Cancelled; nothing was changed.");
         return Ok(());
     }
-    let cleared = module
+    let cleared = conn
+        .module
         .clear_dtcs(&ClearConfirmation::confirmed_by_user())
         .map_err(|e| e.to_string())?;
     println!(

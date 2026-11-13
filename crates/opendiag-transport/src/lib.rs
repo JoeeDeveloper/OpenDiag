@@ -6,6 +6,7 @@ mod serial;
 mod simulator;
 #[cfg(target_os = "linux")]
 mod socketcan_driver;
+mod trace;
 
 use std::time::Duration;
 
@@ -16,6 +17,10 @@ pub use serial::{list_serial_ports, KLine, KLineSerial, PortInfo, SerialIo};
 pub use simulator::Simulator;
 #[cfg(target_os = "linux")]
 pub use socketcan_driver::SocketCan;
+pub use trace::{
+    format_frame, parse_trace, TraceEntry, TraceEvent, TraceReplay, TraceStatus, Tracing,
+    TRACE_HEADER,
+};
 
 /// A unit of data on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,4 +75,47 @@ pub trait Transport {
         ))
     }
     fn capabilities(&self) -> Capabilities;
+}
+
+/// A boxed transport is a transport, so code can pick one at run time.
+impl<T: Transport + ?Sized> Transport for Box<T> {
+    fn send(&mut self, frame: &Frame) -> Result<()> {
+        (**self).send(frame)
+    }
+
+    fn recv(&mut self, timeout: Duration) -> Result<Frame> {
+        (**self).recv(timeout)
+    }
+
+    fn set_baud(&mut self, baud: u32) -> Result<()> {
+        (**self).set_baud(baud)
+    }
+
+    fn slow_init(&mut self, address: u8) -> Result<()> {
+        (**self).slow_init(address)
+    }
+
+    fn fast_init(&mut self) -> Result<()> {
+        (**self).fast_init()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        (**self).capabilities()
+    }
+}
+
+/// Open a CAN interface by name. SocketCAN exists only on Linux; elsewhere this
+/// returns a clear error instead of failing to compile callers.
+pub fn open_can(interface: &str) -> Result<Box<dyn Transport>> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(SocketCan::open(interface)?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = interface;
+        Err(opendiag_core::Error::Transport(
+            "CAN interfaces (SocketCAN) are only available on Linux".into(),
+        ))
+    }
 }

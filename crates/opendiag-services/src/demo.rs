@@ -6,7 +6,7 @@ use opendiag_proto::isotp::{Config, IsoTpFrame, IsoTpLink};
 use opendiag_proto::kw1281::sim::Kw1281Sim;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::uds::{UdsClient, UdsConfig};
-use opendiag_transport::{Frame, Simulator};
+use opendiag_transport::{Frame, Simulator, Transport};
 
 use crate::Kw1281Module;
 
@@ -33,11 +33,15 @@ pub fn virtual_kw1281_bus() -> Kw1281Sim {
 pub type VirtualKw1281 = Kw1281Module<Kw1281Sim, FakeClock>;
 
 pub fn virtual_kw1281_module() -> Result<VirtualKw1281> {
-    let client = Kw1281Client::new(
-        virtual_kw1281_bus(),
-        FakeClock::new(),
-        Kw1281Config::default(),
-    );
+    virtual_kw1281_module_over(virtual_kw1281_bus())
+}
+
+/// The same session over any transport that carries the virtual module's traffic
+/// (for example the virtual bus wrapped in a tracer).
+pub fn virtual_kw1281_module_over<T: Transport>(
+    transport: T,
+) -> Result<Kw1281Module<T, FakeClock>> {
+    let client = Kw1281Client::new(transport, FakeClock::new(), Kw1281Config::default());
     Kw1281Module::connect(client, 0x01)
 }
 
@@ -105,8 +109,13 @@ pub type VirtualClient = UdsClient<Simulator, FakeClock>;
 
 /// A UDS client wired to the virtual ECU. Read-only until a service unlocks it.
 pub fn virtual_uds_client() -> VirtualClient {
+    virtual_uds_client_over(virtual_ecu_bus())
+}
+
+/// The same client over any transport carrying the virtual ECU's traffic.
+pub fn virtual_uds_client_over<T: Transport>(transport: T) -> UdsClient<T, FakeClock> {
     let link = IsoTpLink::new(
-        virtual_ecu_bus(),
+        transport,
         FakeClock::new(),
         TESTER_ID,
         ECU_ID,

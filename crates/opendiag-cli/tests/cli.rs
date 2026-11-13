@@ -198,6 +198,124 @@ fn log_refuses_modules_without_live_data_and_bad_input() {
     );
 }
 
+fn temp_file(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("opendiag-cli-{}-{name}", std::process::id()))
+}
+
+#[test]
+fn trace_records_a_simulated_kw1281_session() {
+    let path = temp_file("kw.trace");
+    let (ok, _, err) = run(
+        &[
+            "scan",
+            "--simulate-kw1281",
+            "--trace",
+            path.to_str().unwrap(),
+        ],
+        "",
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("Trace:") && err.contains("event(s) written"),
+        "{err}"
+    );
+
+    let events = opendiag_transport::parse_trace(&text).expect("the trace parses");
+    assert!(matches!(
+        events[0].event,
+        opendiag_transport::TraceEvent::SlowInit(1)
+    ));
+    let sent = events
+        .iter()
+        .filter(|e| matches!(e.event, opendiag_transport::TraceEvent::Tx(_)))
+        .count();
+    let received = events
+        .iter()
+        .filter(|e| matches!(e.event, opendiag_transport::TraceEvent::Rx(_)))
+        .count();
+    assert!(
+        sent > 10 && received > 10,
+        "{sent} sent, {received} received"
+    );
+    // The goodbye block sent when the session closes is recorded too, and the
+    // report is printed after it (so the count includes it).
+    let last_tx = events.iter().rev().find_map(|e| match &e.event {
+        opendiag_transport::TraceEvent::Tx(f) => Some(f.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        last_tx,
+        Some(opendiag_transport::Frame::Raw(vec![0x03])),
+        "ends with the block end byte"
+    );
+    assert!(err.contains(&format!("{} event(s)", events.len())), "{err}");
+}
+
+#[test]
+fn trace_records_can_frames_for_uds() {
+    let path = temp_file("uds.trace");
+    let (ok, _, err) = run(
+        &[
+            "dtc",
+            "read",
+            "--simulate",
+            "--trace",
+            path.to_str().unwrap(),
+        ],
+        "",
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(ok, "{err}");
+    assert!(
+        text.contains("TX can 7E0#") && text.contains("RX can 7E8#"),
+        "{text}"
+    );
+}
+
+#[test]
+fn trace_to_an_unwritable_path_is_a_clear_error() {
+    let (ok, _, err) = run(
+        &[
+            "scan",
+            "--simulate-kw1281",
+            "--trace",
+            "no-such-dir-xyz/out.trace",
+        ],
+        "",
+    );
+    assert!(!ok);
+    assert!(err.contains("cannot create"), "{err}");
+}
+
+#[test]
+fn capture_requires_exactly_one_source_and_reports_a_missing_device() {
+    let out = temp_file("cap.trace");
+    let out = out.to_str().unwrap();
+    let (ok, _, err) = run(&["capture", "--out", out], "");
+    assert!(!ok && err.contains("required"), "{err}");
+
+    let (ok, _, err) = run(
+        &["capture", "--port", "COM1", "--can", "can0", "--out", out],
+        "",
+    );
+    assert!(!ok && err.contains("cannot be used with"), "{err}");
+
+    let (ok, _, err) = run(
+        &["capture", "--port", "NOPE-DOES-NOT-EXIST", "--out", out],
+        "",
+    );
+    assert!(!ok && err.contains("cannot open"), "{err}");
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let (ok, _, err) = run(&["capture", "--can", "can0", "--out", out], "");
+        assert!(!ok && err.contains("only available on Linux"), "{err}");
+    }
+}
+
 fn data_dir() -> String {
     format!("{}/../../data", env!("CARGO_MANIFEST_DIR"))
 }

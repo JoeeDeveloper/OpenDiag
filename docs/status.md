@@ -33,8 +33,9 @@ Last reviewed 2026-11-13. This is deliberately blunt.
   `ClearConfirmation::confirmed_by_user()` is public. Today only "clear fault codes" is wired as a write, and
   only the CLI constructs the confirmation, after a typed `YES` (or `--yes`). There is **no backup/restore
   mechanism yet**, which must exist before coding or adaptation writes are added.
-- **No raw capture/trace tool.** The plan's `opendiag capture` is not built, so a failed hardware session
-  leaves no byte-level record to debug from. Build this first.
+- **Capture/trace tooling is new and itself unverified on hardware.** `--trace` and `opendiag capture` exist
+  ([capture.md](capture.md)) but have only run against simulators; the serial and CAN capture paths have never
+  heard a real bus. The only committed trace fixture is synthetic.
 - Fault status bytes and measuring-block formulas are shown raw; there is no decoding data yet.
 - KWP2000 services are implemented twice (K-line and TP2.0); KW1281 has no desync recovery.
 - `Drop` on a dead link can block for one byte timeout (~1 s) while it tries to end the session.
@@ -44,7 +45,7 @@ Last reviewed 2026-11-13. This is deliberately blunt.
 
 ## Not started (from the plan)
 
-J2534 and ELM327 transports, PCAN, `opendiag capture`, coding/adaptation/output tests, backup/restore,
+J2534 and ELM327 transports, PCAN, coding/adaptation/output tests, backup/restore,
 the Tauri GUI, packaging/signing, vehicle profiles, mdBook docs, WASM plugins.
 
 ## First hardware session: a safe checklist
@@ -53,10 +54,11 @@ Use a **bench module** (out of the car, powered from a 12 V supply, K-line wired
 the ignition on and engine off. Read-only steps only.
 
 1. `opendiag ports`: confirm the cable appears. Note the port name.
-2. `opendiag probe --port <PORT> --address 0x01 --slow-init` (a module that never answers is normal at
-   first; try `--baud 9600`, then `--no-echo`).
-3. If that connects: `opendiag scan --port <PORT> --slow-init`, then `opendiag dtc read ...`, then
-   `opendiag log --groups 1 --samples 5 ...`.
+2. `opendiag probe --port <PORT> --address 0x01 --slow-init --trace probe.trace` (a module that never
+   answers is normal at first; try `--baud 9600`, then `--no-echo`). **Always add `--trace`.**
+3. If that connects: `opendiag scan --port <PORT> --slow-init --trace scan.trace`, then `opendiag dtc read ...`,
+   then `opendiag log --groups 1 --samples 5 ...` (each with `--trace`).
 4. **Do not run `dtc clear` until reads are proven reliable** on that module.
-5. Save the exact command, the full output, and the adapter model. A failure with those is useful;
-   without them it cannot be debugged.
+5. Keep the exact command, the console output, the `.trace` file and the adapter model. A failure with those is
+   debuggable; without them it is not. Read the trace for your VIN before sharing it
+   ([capture.md](capture.md)).

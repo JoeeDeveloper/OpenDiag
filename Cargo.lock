@@ -338,6 +338,7 @@ name = "opendiag-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "opendiag-core",
  "opendiag-data",
  "opendiag-proto",
  "opendiag-services",
