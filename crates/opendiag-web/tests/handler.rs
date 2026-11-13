@@ -263,3 +263,109 @@ fn a_healthy_module_stays_alive_across_ticks() {
     assert!(app.is_alive());
     assert_eq!(api(&mut app, "/api/dtcs").status, 200);
 }
+
+// ---- fuzzing: no request that breaks a rule may ever be served ----
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 33
+    }
+    fn below(&mut self, n: u64) -> usize {
+        (self.next() % n) as usize
+    }
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[self.below(items.len() as u64)]
+    }
+    fn junk(&mut self) -> String {
+        (0..self.below(30))
+            .map(|_| char::from_u32(self.next() as u32 % 0x800).unwrap_or('?'))
+            .collect()
+    }
+}
+
+#[test]
+fn random_requests_are_never_served_unless_every_rule_holds() {
+    let mut app = kw_app();
+    let mut rng = Rng(99);
+    let paths = [
+        "/",
+        "/api/info",
+        "/api/ident",
+        "/api/dtcs",
+        "/api/live",
+        "/api/clear",
+        "/app.js",
+        "/app.css",
+        "/api/",
+        "//api/info",
+        "/api/info/",
+        "/API/INFO",
+        "/api/../",
+        "/%2e%2e/",
+    ];
+    let queries = [
+        "",
+        "?t=",
+        "?t=s3cret-token",
+        "?t=s3cret-token&x=1",
+        "?groups=1",
+        "?groups=%31",
+        "?t=S3CRET-TOKEN",
+    ];
+    let methods = [
+        "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "get", "", "CONNECT",
+    ];
+    let hosts = [
+        None,
+        Some("127.0.0.1:4242"),
+        Some("localhost:4242"),
+        Some("127.0.0.1"),
+        Some("evil.example"),
+        Some("127.0.0.1:4242@evil.example"),
+        Some("127.0.0.1:4242, evil.example"),
+    ];
+    let mut served = 0;
+    for _ in 0..20_000 {
+        let target = if rng.below(4) == 0 {
+            format!("{}{}", rng.junk(), rng.junk())
+        } else {
+            format!("{}{}", rng.pick(&paths), rng.pick(&queries))
+        };
+        let method = rng.pick(&methods);
+        let host = hosts[rng.below(hosts.len() as u64)];
+        let junk_token = rng.junk();
+        let token = match rng.below(4) {
+            0 => None,
+            1 => Some(TOKEN),
+            2 => Some(junk_token.as_str()),
+            _ => Some(""),
+        };
+        let r = app.handle(&Request {
+            method,
+            target: &target,
+            host,
+            token_header: token,
+        });
+        if r.status == 200 {
+            served += 1;
+            let host_ok = matches!(host, Some("127.0.0.1:4242" | "localhost:4242"));
+            assert!(host_ok, "served with host {host:?}: {target:?}");
+            assert_eq!(method, "GET", "served a {method} request: {target:?}");
+            let path = target.split('?').next().unwrap();
+            if path == "/" {
+                assert!(target.contains("t=s3cret-token"), "{target:?}");
+            } else if path.starts_with("/api/") {
+                assert_eq!(token, Some(TOKEN), "{target:?}");
+            } else {
+                assert!(path == "/app.js" || path == "/app.css", "{target:?}");
+            }
+        }
+    }
+    // The test must actually exercise the success path.
+    assert!(served > 50, "only {served} requests were served");
+}

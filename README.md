@@ -19,6 +19,7 @@ An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi
 Download the archive for your platform from the project's Releases page, unpack it, and run `opendiag` from inside
 the unpacked folder (it finds the open data files in `./data`). Check the download against `SHA256SUMS`. The
 binaries are not code-signed, so Windows and macOS will warn; see [docs/releasing.md](docs/releasing.md).
+In PowerShell, run it as `.\opendiag.exe scan --simulate-kw1281`: PowerShell does not run programs from the current folder unless you prefix them with `.\`.
 Or build from source with `cargo build --release -p opendiag-cli`.
 
 Try it without a car:

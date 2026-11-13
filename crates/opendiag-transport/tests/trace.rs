@@ -337,3 +337,41 @@ fn can_interfaces_report_a_clear_error_off_linux() {
         .to_string();
     assert!(err.contains("only available on Linux"), "{err}");
 }
+
+#[test]
+fn random_and_mutated_trace_text_never_panics() {
+    use opendiag_transport::parse_trace;
+    let valid = "# opendiag trace v1\n0.000096 EV slow_init 01\n0.000197 RX raw 55 01 8A\n0.000300 TX can 7E0#023E00\n";
+    let mut state = 4242u64;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        state >> 33
+    };
+    let mut ok = 0;
+    for _ in 0..5_000 {
+        let mut bytes = valid.as_bytes().to_vec();
+        for _ in 0..(next() % 5) {
+            let i = (next() as usize) % bytes.len();
+            match next() % 3 {
+                0 => bytes[i] = next() as u8,
+                1 => {
+                    bytes.remove(i);
+                }
+                _ => bytes.insert(i, next() as u8),
+            }
+            if bytes.is_empty() {
+                break;
+            }
+        }
+        if parse_trace(&String::from_utf8_lossy(&bytes)).is_ok() {
+            ok += 1;
+        }
+        let noise: String = (0..(next() % 120))
+            .map(|_| char::from_u32((next() % 0x500) as u32).unwrap_or('?'))
+            .collect();
+        let _ = parse_trace(&noise);
+    }
+    assert!(ok > 100, "only {ok} mutated traces parsed");
+}

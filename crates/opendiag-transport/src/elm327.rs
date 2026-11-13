@@ -577,4 +577,136 @@ mod tests {
         let c = a.capabilities();
         assert!(c.can && !c.kline && !c.slow_init && !c.fast_init);
     }
+
+    // ---- robustness: nothing the adapter prints may panic or hang the driver ----
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// An "adapter" that answers every command with random junk mixed with
+    /// plausible fragments, always ending in a prompt so nothing waits.
+    struct JunkPort {
+        rng: Rng,
+        pending: VecDeque<u8>,
+    }
+
+    impl SerialIo for JunkPort {
+        fn write_all(&mut self, _data: &[u8]) -> io::Result<()> {
+            const FRAGMENTS: [&str; 12] = [
+                "OK\r",
+                "ELM327 v1.5\r",
+                "NO DATA\r",
+                "CAN ERROR\r",
+                "?\r",
+                "SEARCHING...\r",
+                "7E8 03 41 00\r",
+                "7E8037F2278\r",
+                "7E8 0\r",
+                "\r\r",
+                "BUFFER FULL\r",
+                "<DATA ERROR\r",
+            ];
+            self.pending.clear();
+            for _ in 0..self.rng.below(6) {
+                if self.rng.below(2) == 0 {
+                    self.pending
+                        .extend(FRAGMENTS[self.rng.below(12) as usize].bytes());
+                } else {
+                    for _ in 0..self.rng.below(40) {
+                        // Anything except the prompt, which we add at the end.
+                        let b = self.rng.next() as u8;
+                        self.pending.push_back(if b == b'>' { b'.' } else { b });
+                    }
+                }
+            }
+            self.pending.push_back(b'>');
+            Ok(())
+        }
+        fn read(&mut self, buf: &mut [u8], _t: Duration) -> io::Result<usize> {
+            if self.pending.is_empty() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            // Random small chunks, to exercise reassembly across reads.
+            let n = (1 + self.rng.below(7) as usize)
+                .min(buf.len())
+                .min(self.pending.len());
+            for slot in buf.iter_mut().take(n) {
+                *slot = self.pending.pop_front().unwrap_or(0);
+            }
+            Ok(n)
+        }
+        fn set_baud(&mut self, _: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn set_break(&mut self, _: bool) -> io::Result<()> {
+            Ok(())
+        }
+        fn clear_input(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn junk_from_the_adapter_never_panics_or_hangs() {
+        let started = Instant::now();
+        let (mut inited, mut frames) = (0, 0);
+        for seed in 0..400u64 {
+            let port = JunkPort {
+                rng: Rng(seed),
+                pending: VecDeque::new(),
+            };
+            let mut a = Elm327::new(port);
+            if a.init(0x7E0, 0x7E8).is_ok() {
+                inited += 1;
+            }
+            // Whatever state init left behind, sending must stay well-behaved.
+            for i in 0..5u8 {
+                let _ = a.send(&Frame::can(0x7E0, &[2, 0x3E, i]));
+                while let Ok(f) = a.recv(Duration::ZERO) {
+                    frames += 1;
+                    let Frame::Can { id, extended, data } = f else {
+                        panic!("a non-CAN frame came out of the adapter");
+                    };
+                    assert!(id <= 0x7FF && !extended && data.len() <= 8);
+                }
+            }
+        }
+        // The junk is not always junk: some sends must have yielded frames, or
+        // the test would prove nothing.
+        // (Init needs ten clean answers in a row, which junk will not give; the
+        // happy path is covered by the emulator tests.)
+        assert!(frames > 0, "inited {inited}, frames {frames}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn frame_and_line_parsers_survive_random_text() {
+        let mut rng = Rng(7);
+        for _ in 0..20_000 {
+            let len = rng.below(40) as usize;
+            let text: String = (0..len)
+                .map(|_| match rng.below(4) {
+                    0 => char::from(b"0123456789ABCDEF"[rng.below(16) as usize]),
+                    1 => ' ',
+                    2 => char::from_u32(rng.below(0x3000) as u32).unwrap_or('?'),
+                    _ => char::from(rng.next() as u8 & 0x7F),
+                })
+                .collect();
+            if let Some(Frame::Can { id, data, .. }) = parse_frame(&text) {
+                assert!(id <= 0xFFF && data.len() <= 8, "{text:?}");
+            }
+            let _ = parse_lines(&text, "ATZ");
+        }
+    }
 }

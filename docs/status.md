@@ -88,6 +88,15 @@ built-in browser against the simulator and rendered with no console errors. **No
 small screens, a long live session, any real module. It has no write features by design, and live data is KW1281
 only. See [web.md](web.md).
 
+## Robustness
+
+Random and mutated input is thrown at every parser that sees untrusted bytes: protocol decoders and client
+sessions (existing), the ELM327 driver (junk adapter output), trace files, contributed data files (alias bombs,
+deep nesting, mutated valid files) and the web request handler (20,000 random requests; nothing may be served
+unless Host, method and token all pass). This found one real problem, fixed: deeply nested YAML in a data file
+took seconds to parse, so the loader now refuses absurd nesting first. These tests use fixed seeds, so they are
+regression tests rather than open-ended fuzzing; a coverage-guided fuzzer has not been run.
+
 ## ELM327 adapters
 
 `--elm327 <PORT>` carries UDS over CAN through an ELM327-style adapter, with raw frames and our own ISO-TP. It is

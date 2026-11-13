@@ -52,8 +52,40 @@ pub fn json_schema_pretty() -> String {
     serde_json::to_string_pretty(&json_schema()).expect("schema serialises")
 }
 
+/// Data files are flat lists; real ones nest a handful of levels. Refuse absurd
+/// nesting before the YAML parser sees it (deeply nested input makes it very
+/// slow). Deliberately crude: it counts brackets and indentation without
+/// understanding quoting, which is fine because legitimate files come nowhere
+/// near the limits.
+fn too_deeply_nested(text: &str) -> Option<String> {
+    const MAX_BRACKET_DEPTH: i32 = 32;
+    const MAX_INDENT: usize = 64;
+    let mut depth = 0i32;
+    for c in text.chars() {
+        match c {
+            '[' | '{' => {
+                depth += 1;
+                if depth > MAX_BRACKET_DEPTH {
+                    return Some(format!("nesting deeper than {MAX_BRACKET_DEPTH} levels"));
+                }
+            }
+            ']' | '}' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+    }
+    let widest = text
+        .lines()
+        .map(|l| l.len() - l.trim_start_matches(' ').len())
+        .max()
+        .unwrap_or(0);
+    (widest > MAX_INDENT).then(|| format!("indentation deeper than {MAX_INDENT} spaces"))
+}
+
 /// Parse and fully validate one file's text. `name` is used in messages.
 pub fn parse_str(name: &str, text: &str) -> Result<DataFile, Vec<Issue>> {
+    if let Some(why) = too_deeply_nested(text) {
+        return Err(vec![issue(name, why)]);
+    }
     let value: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|e| vec![issue(name, format!("invalid YAML: {e}"))])?;
     let Some(map) = value.as_mapping() else {
