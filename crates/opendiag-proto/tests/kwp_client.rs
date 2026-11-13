@@ -1,7 +1,7 @@
 //! KWP2000 client against the Simulator carrying raw K-line bytes.
 
 use opendiag_core::{Error, Result, WriteMode};
-use opendiag_proto::kwp::{KeyBytes, KwpClient, KwpConfig, KwpDtc, Message};
+use opendiag_proto::kwp::{KeyBytes, KwpClient, KwpConfig, KwpDtc, KwpService, Message};
 use opendiag_proto::uds::SeedKey;
 use opendiag_transport::{Frame, Simulator};
 

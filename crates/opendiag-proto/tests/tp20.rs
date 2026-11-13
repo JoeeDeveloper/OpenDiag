@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use opendiag_core::{Error, WriteMode};
 use opendiag_proto::clock::{Clock, FakeClock};
+use opendiag_proto::kwp::KwpService;
 use opendiag_proto::tp20::sim::Tp20Sim;
 use opendiag_proto::tp20::{Tp20Config, Tp20KwpClient, Tp20Link};
 use opendiag_transport::{Frame, Simulator};

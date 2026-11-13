@@ -8,6 +8,7 @@ pub mod backup;
 pub mod demo;
 pub mod fault_clear;
 mod kw1281_module;
+mod kwp_module;
 pub mod live;
 
 pub use adaptation::{
@@ -17,6 +18,7 @@ pub use adaptation::{
 pub use backup::{BackupRecord, BackupStatus, BackupStore};
 pub use fault_clear::{apply_clear, plan_clear, ClearConfirmation, ClearOutcome, FaultAccess};
 pub use kw1281_module::Kw1281Module;
+pub use kwp_module::KwpModule;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
 
 use opendiag_core::{Error, Result, WriteMode};

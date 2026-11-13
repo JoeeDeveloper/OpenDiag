@@ -62,3 +62,6 @@ a *snapshot* in place of a restore point:
 
 `opendiag backup list` shows snapshots as "fault codes cleared" with the codes that were stored. A snapshot is a
 record, not a restore point: `backup restore` refuses it with an explanation.
+
+The same flow applies to every protocol that can clear codes: UDS, KW1281, KWP2000 on K-line and KWP2000 over
+TP2.0. Each protocol only supplies "read the codes" and "send the clear"; the guard around them is shared.

@@ -8,7 +8,32 @@ use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_transport::{Frame, Simulator, Transport};
 
-use crate::Kw1281Module;
+use opendiag_proto::kwp::sim::KwpSim;
+use opendiag_proto::kwp::{KwpClient, KwpConfig};
+
+use crate::{Kw1281Module, KwpModule};
+
+/// A virtual K-line KWP2000 module: made-up identification and two made-up fault codes.
+pub fn virtual_kwp_bus() -> KwpSim {
+    KwpSim::new(0x01)
+        .ident(b"VIRTUAL KWP2000 ECU")
+        .fault(12345, 0x20)
+        .fault(54321, 0x01)
+}
+
+/// The virtual KWP2000 module with its session open.
+pub type VirtualKwp = KwpModule<KwpClient<KwpSim>>;
+
+pub fn virtual_kwp_module() -> Result<VirtualKwp> {
+    virtual_kwp_module_over(virtual_kwp_bus())
+}
+
+/// The same session over any transport that carries the virtual module's traffic.
+pub fn virtual_kwp_module_over<T: Transport>(transport: T) -> Result<KwpModule<KwpClient<T>>> {
+    let mut kwp = KwpClient::new(transport, KwpConfig::new(0x01));
+    kwp.start_communication()?;
+    KwpModule::start(kwp, 0x01, "kwp2000")
+}
 
 /// A virtual KW1281 module with made-up ident text and two fault codes.
 pub fn virtual_kw1281_bus() -> Kw1281Sim {

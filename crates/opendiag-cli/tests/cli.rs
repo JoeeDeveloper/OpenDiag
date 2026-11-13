@@ -470,6 +470,113 @@ fn unix_times_in_the_backup_list_are_formatted_as_utc_dates() {
     assert!(ok && out.contains("2026-11-13 17:06:23 UTC"), "{out}");
 }
 
+#[test]
+fn kwp2000_simulated_scan_and_dtc_read() {
+    let (ok, out, err) = run(&["scan", "--simulate-kwp"], "");
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("Ident            : VIRTUAL KWP2000 ECU"),
+        "{out}"
+    );
+
+    let (ok, out, err) = run(&["dtc", "read", "--simulate-kwp"], "");
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("12345  status 0x20") && out.contains("54321  status 0x01"),
+        "{out}"
+    );
+}
+
+#[test]
+fn kwp2000_guarded_clear_really_empties_the_module_and_lists_the_snapshot() {
+    let bk = temp_file("kwp-clear.jsonl");
+    let _ = std::fs::remove_file(&bk);
+    let b = bk.to_str().unwrap();
+    let (ok, out, err) = run(
+        &["dtc", "clear", "--simulate-kwp", "--backup-file", b],
+        "YES\n",
+    );
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("Cleared 2 trouble code(s). Snapshot b0001"),
+        "{out}"
+    );
+    assert!(
+        out.contains("The module now reports no trouble codes"),
+        "{out}"
+    );
+
+    let (_, listing, _) = run(&["backup", "list", "--backup-file", b], "");
+    std::fs::remove_file(&bk).unwrap();
+    assert!(
+        listing.contains("KWP2000 module 0x01 fault codes cleared (2 stored)")
+            && listing.contains("was: 12345 status 0x20")
+            && listing.contains("Verified"),
+        "{listing}"
+    );
+}
+
+#[test]
+fn kwp2000_trace_starts_with_the_fast_init_wakeup() {
+    let path = temp_file("kwp.trace");
+    let (ok, _, err) = run(
+        &["scan", "--simulate-kwp", "--trace", path.to_str().unwrap()],
+        "",
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(ok, "{err}");
+    let events = opendiag_transport::parse_trace(&text).unwrap();
+    assert!(
+        matches!(events[0].event, opendiag_transport::TraceEvent::FastInit),
+        "{:?}",
+        events[0]
+    );
+    // StartCommunication (0x81) follows, then the diagnostic session request.
+    assert!(text.contains("TX raw 81 01 F1 81"), "{text}");
+}
+
+#[test]
+fn kwp2000_has_no_live_data_or_adaptation_yet() {
+    let (ok, _, err) = run(&["log", "--simulate-kwp", "--groups", "1"], "");
+    assert!(!ok && err.contains("only available for KW1281"), "{err}");
+    let (ok, _, err) = run(
+        &["adaptation", "read", "--simulate-kwp", "--channel", "1"],
+        "",
+    );
+    assert!(!ok && err.contains("only available for KW1281"), "{err}");
+}
+
+#[test]
+fn hardware_flag_combinations_are_validated_with_helpful_messages() {
+    let (ok, _, err) = run(
+        &["scan", "--port", "COM9", "--slow-init", "--fast-init"],
+        "",
+    );
+    assert!(!ok && err.contains("cannot be used with"), "{err}");
+
+    let (ok, _, err) = run(
+        &["scan", "--port", "NOPE-DOES-NOT-EXIST", "--fast-init"],
+        "",
+    );
+    assert!(!ok && err.contains("cannot open"), "{err}");
+
+    let (ok, _, err) = run(&["scan", "--port", "COM9", "--can", "can0"], "");
+    assert!(!ok && err.contains("not both"), "{err}");
+
+    let (ok, _, err) = run(&["scan"], "");
+    assert!(
+        !ok && err.contains("--fast-init") && err.contains("--can"),
+        "{err}"
+    );
+
+    let (ok, _, err) = run(&["scan", "--can", "opendiag-no-such-if"], "");
+    assert!(
+        !ok && (err.contains("only available on Linux") || err.contains("cannot open")),
+        "{err}"
+    );
+}
+
 fn temp_file(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("opendiag-cli-{}-{name}", std::process::id()))
 }
@@ -671,7 +778,7 @@ fn clear_without_confirmation_changes_nothing_and_writes_no_snapshot() {
     let bk = temp_file("cancel-clear.jsonl");
     let _ = std::fs::remove_file(&bk);
     for answer in ["no\n", "\n", "yes\n", "y\n", ""] {
-        for sim in ["--simulate", "--simulate-kw1281"] {
+        for sim in ["--simulate", "--simulate-kw1281", "--simulate-kwp"] {
             let (ok, out, _) = run(
                 &["dtc", "clear", sim, "--backup-file", bk.to_str().unwrap()],
                 answer,

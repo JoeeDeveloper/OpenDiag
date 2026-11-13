@@ -10,6 +10,7 @@ An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi
 |---|---|
 | Protocols | ISO-TP, UDS, KWP2000 (K-line), KW1281 (5-baud init), TP2.0, all against simulators |
 | Transports | Serial K-line (Windows/Linux/macOS), SocketCAN (Linux), Simulator, Replay |
+| Modules | `scan` and `dtc read/clear` work on KW1281 (`--slow-init`), KWP2000 on K-line (`--fast-init`) and KWP2000 over TP2.0 on CAN (`--can`, Linux); live data and adaptation are KW1281 only |
 | CLI | `scan`, `dtc read/clear`, `log` (live data to CSV), `adaptation read/set`, `backup list/restore`, `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
 | Data | Open YAML format with validator and generated JSON Schema (CC0-1.0) |
 

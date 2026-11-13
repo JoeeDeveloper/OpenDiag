@@ -52,6 +52,10 @@ pub struct BackupRecord {
     /// were cleared. Absent in older records.
     #[serde(default)]
     pub codes: Vec<String>,
+    /// Which module this was, as text (e.g. `KW1281 module 0x01`). Kept apart from
+    /// `note`, which a later status change replaces. Absent in older records.
+    #[serde(default)]
+    pub module: Option<String>,
 }
 
 fn io(e: impl std::fmt::Display) -> Error {
@@ -167,6 +171,7 @@ impl BackupStore {
             note: None,
             restores: new.restores,
             codes: Vec::new(),
+            module: None,
         };
         self.append(&rec)?;
         Ok(rec)
@@ -174,12 +179,12 @@ impl BackupStore {
 
     /// Record the fault codes stored in a module, durably, just before they are
     /// cleared. Clearing cannot be undone, so this is a snapshot, not a restore point.
-    /// `module_address` is 0 for protocols without one (UDS); `note` says which module.
+    /// `module_address` is 0 for protocols without one (UDS); `module` says which module.
     pub fn plan_clear(
         &self,
         protocol: &str,
         module_address: u8,
-        note: String,
+        module: String,
         codes: Vec<String>,
     ) -> Result<BackupRecord> {
         let rec = BackupRecord {
@@ -192,9 +197,10 @@ impl BackupStore {
             old_value: 0,
             new_value: 0,
             status: BackupStatus::Planned,
-            note: Some(note),
+            note: None,
             restores: None,
             codes,
+            module: Some(module),
         };
         self.append(&rec)?;
         Ok(rec)

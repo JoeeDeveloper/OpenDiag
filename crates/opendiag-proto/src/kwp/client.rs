@@ -169,69 +169,27 @@ impl<T: Transport> KwpClient<T> {
         self.request(&[SID_STOP_COMMUNICATION])?;
         Ok(())
     }
+}
 
-    pub fn start_diagnostic_session(&mut self, mode: u8) -> Result<()> {
-        let r = self.request(&[SID_START_DIAGNOSTIC_SESSION, mode])?;
-        if r.get(1) != Some(&mode) {
-            return Err(protocol(format!("bad session response {r:02X?}")));
-        }
-        Ok(())
+impl<T: Transport> KwpService for KwpClient<T> {
+    fn request(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        KwpClient::request(self, data)
     }
 
-    pub fn tester_present(&mut self) -> Result<()> {
-        self.request(&[SID_TESTER_PRESENT])?;
-        Ok(())
+    fn write_mode(&self) -> WriteMode {
+        KwpClient::write_mode(self)
     }
 
-    /// ReadECUIdentification (0x1A): returns the data after the option echo.
-    pub fn read_ecu_identification(&mut self, option: u8) -> Result<Vec<u8>> {
-        let r = self.request(&[SID_READ_ECU_IDENTIFICATION, option])?;
-        if r.get(1) != Some(&option) {
-            return Err(protocol(format!(
-                "identification option echo mismatch {r:02X?}"
-            )));
-        }
-        Ok(r[2..].to_vec())
+    fn set_write_mode(&mut self, mode: WriteMode) {
+        KwpClient::set_write_mode(self, mode);
     }
 
-    /// ReadDataByLocalIdentifier (0x21): returns the data after the id echo.
-    pub fn read_data_by_local_identifier(&mut self, id: u8) -> Result<Vec<u8>> {
-        let r = self.request(&[SID_READ_DATA_BY_LOCAL_ID, id])?;
-        if r.get(1) != Some(&id) {
-            return Err(protocol(format!("local id echo mismatch {r:02X?}")));
-        }
-        Ok(r[2..].to_vec())
+    fn close(&mut self) {
+        let _ = self.stop_communication();
     }
+}
 
-    /// ReadDiagnosticTroubleCodesByStatus (0x18). `group` 0xFF00 means all groups.
-    pub fn read_dtcs_by_status(&mut self, status: u8, group: u16) -> Result<Vec<KwpDtc>> {
-        let [gh, gl] = group.to_be_bytes();
-        let r = self.request(&[SID_READ_DTC_BY_STATUS, status, gh, gl])?;
-        let count = usize::from(*r.get(1).ok_or_else(|| protocol("missing DTC count"))?);
-        let records = &r[2..];
-        if records.len() != count * 3 {
-            return Err(protocol(format!(
-                "DTC count {count} does not match {} data bytes",
-                records.len()
-            )));
-        }
-        Ok(records
-            .chunks_exact(3)
-            .map(|c| KwpDtc {
-                code: u16::from_be_bytes([c[0], c[1]]),
-                status: c[2],
-            })
-            .collect())
-    }
-
-    /// ClearDiagnosticInformation (0x14). `group` 0xFF00 means all. Requires unlocked writes.
-    pub fn clear_dtcs(&mut self, group: u16) -> Result<()> {
-        self.require_unlocked("ClearDiagnosticInformation")?;
-        let [gh, gl] = group.to_be_bytes();
-        self.request(&[SID_CLEAR_DTC, gh, gl])?;
-        Ok(())
-    }
-
+impl<T: Transport> KwpClient<T> {
     /// WriteDataByLocalIdentifier (0x3B). Requires unlocked writes; back up first.
     pub fn write_data_by_local_identifier(&mut self, id: u8, data: &[u8]) -> Result<()> {
         self.require_unlocked("WriteDataByLocalIdentifier")?;
@@ -245,7 +203,7 @@ impl<T: Transport> KwpClient<T> {
     }
 
     /// SecurityAccess (0x27) at odd `level`. Requires unlocked writes. An all-zero
-    /// seed means already unlocked.
+    /// seed means already unlocked. No seed-key algorithms are bundled.
     pub fn security_access(&mut self, level: u8, algo: &dyn SeedKey) -> Result<()> {
         self.require_unlocked("SecurityAccess")?;
         if level % 2 == 0 {

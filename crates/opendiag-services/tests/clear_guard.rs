@@ -75,6 +75,11 @@ fn codes_that_come_straight_back_are_reported_and_recorded_not_an_error() {
     let rec = store.get(&outcome.backup_id).unwrap().unwrap();
     assert_eq!(rec.status, BackupStatus::VerificationFailed);
     assert!(rec.note.unwrap().contains("still reported"));
+    assert_eq!(
+        rec.module.as_deref(),
+        Some("UDS ECU (request id 0x7E0)"),
+        "a failure status must not erase which module the snapshot came from"
+    );
     assert_eq!(rec.codes, vec!["P0171-00 status 0x09"]);
     assert_eq!((rec.protocol.as_str(), rec.module_address), ("uds", 0));
     assert_eq!(rec.kind, "dtc_clear");
@@ -152,6 +157,7 @@ fn a_module_that_refuses_is_recorded_and_writes_are_relocked() {
     let rec = store.get("b0001").unwrap().unwrap();
     assert_eq!(rec.status, BackupStatus::SaveFailed);
     assert!(rec.note.unwrap().contains("clear failed"));
+    assert_eq!(rec.module.as_deref(), Some("UDS ECU (request id 0x7E0)"));
     assert_eq!(
         rec.codes,
         vec!["P0171-00 status 0x09"],

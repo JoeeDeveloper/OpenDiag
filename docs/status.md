@@ -42,7 +42,12 @@ Last reviewed 2026-11-13. This is deliberately blunt.
   ([capture.md](capture.md)) but have only run against simulators; the serial and CAN capture paths have never
   heard a real bus. The only committed trace fixture is synthetic.
 - Fault status bytes and measuring-block formulas are shown raw; there is no decoding data yet.
-- KWP2000 services are implemented twice (K-line and TP2.0); KW1281 has no desync recovery.
+- KW1281 has no desync recovery. (The KWP2000 services used to be duplicated between K-line and TP2.0; they
+  now share one `KwpService` trait.)
+- **KWP2000 in `scan`/`dtc` is VAG-unverified.** It follows ISO 14230-3: the session mode (0x89, from the public
+  TP2.0 capture), the identification option (0x9B) and the fault-code display (5-digit decimal, raw status byte)
+  are assumptions. Identification is shown raw with no part number claimed. There is no live data or adaptation
+  over KWP2000 yet.
 - `Drop` on a dead link can block for one byte timeout (~1 s) while it tries to end the session.
 - `serde_yaml` is unmaintained upstream; plan a migration. YAML alias expansion was measured and is bounded.
 - CI: the macOS runner sometimes fails to start (capacity), unrelated to the code. `main` has no branch

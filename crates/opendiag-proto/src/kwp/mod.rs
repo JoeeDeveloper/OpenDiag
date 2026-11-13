@@ -7,9 +7,12 @@
 
 mod client;
 mod frame;
+mod service;
+pub mod sim;
 
 pub use client::{KeyBytes, KwpClient, KwpConfig, KwpDtc};
 pub use frame::{checksum, Message, Parser};
+pub use service::KwpService;
 
 // Service identifiers (ISO 14230-3).
 pub const SID_START_DIAGNOSTIC_SESSION: u8 = 0x10;

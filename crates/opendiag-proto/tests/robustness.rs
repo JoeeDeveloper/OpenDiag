@@ -12,7 +12,7 @@ use opendiag_proto::clock::FakeClock;
 use opendiag_proto::isotp::{Config, IsoTpLink};
 use opendiag_proto::kw1281::sim::Kw1281Sim;
 use opendiag_proto::kw1281::{parse_ascii, parse_faults, Block, Kw1281Client, Kw1281Config};
-use opendiag_proto::kwp::{KwpClient, KwpConfig, Message, Parser};
+use opendiag_proto::kwp::{KwpClient, KwpConfig, KwpService, Message, Parser};
 use opendiag_proto::tp20::sim::Tp20Sim;
 use opendiag_proto::tp20::{
     decode_setup_request, ChannelMsg, SetupReply, Tp20Config, Tp20KwpClient, Tp20Link,

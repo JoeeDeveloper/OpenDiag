@@ -57,7 +57,7 @@ fn guarded_clear_snapshots_clears_verifies_and_relocks() {
     assert_eq!(rec.kind, "dtc_clear");
     assert_eq!(rec.status, BackupStatus::Verified);
     assert_eq!(rec.codes, vec!["00525 status 0x20", "00017 status 0x01"]);
-    assert_eq!(rec.note.as_deref(), Some("KW1281 module 0x01"));
+    assert_eq!(rec.module.as_deref(), Some("KW1281 module 0x01"));
     let _ = std::fs::remove_file(&path);
 }
 

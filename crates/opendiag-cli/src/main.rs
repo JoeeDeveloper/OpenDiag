@@ -8,14 +8,15 @@ use opendiag_core::Error;
 use opendiag_data::{json_schema_pretty, load_dir, CodeSpace, DataSet};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
-use opendiag_proto::kwp::{KwpClient, KwpConfig};
+use opendiag_proto::kwp::{KwpClient, KwpConfig, KwpService};
+use opendiag_proto::tp20::{Tp20Config, Tp20KwpClient, Tp20Link};
 use opendiag_services::demo::{
-    virtual_ecu_bus, virtual_kw1281_bus, virtual_kw1281_module_over, virtual_uds_client_over,
-    TESTER_ID,
+    virtual_ecu_bus, virtual_kw1281_bus, virtual_kw1281_module_over, virtual_kwp_bus,
+    virtual_kwp_module_over, virtual_uds_client_over, TESTER_ID,
 };
 use opendiag_services::{
     apply_change, apply_clear, apply_restore, log_csv, plan_change, plan_clear, plan_restore,
-    BackupStore, ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module,
+    BackupStore, ClearConfirmation, DtcReport, Kw1281Module, KwpModule, Limit, LogConfig, Module,
     WriteConfirmation,
 };
 use opendiag_transport::{
@@ -220,13 +221,22 @@ struct Target {
     /// With --port: use 5-baud slow init and the KW1281 protocol (older modules).
     #[arg(long)]
     slow_init: bool,
+    /// Use the built-in virtual KWP2000 module on a K-line (no car needed).
+    #[arg(long)]
+    simulate_kwp: bool,
+    /// With --port: use ISO 14230 fast init and KWP2000 (newer K-line modules).
+    #[arg(long, conflicts_with = "slow_init")]
+    fast_init: bool,
+    /// CAN interface for KWP2000 over TP2.0, e.g. can0 (Linux only).
+    #[arg(long)]
+    can: Option<String>,
     /// Module address in hex, e.g. 0x01 for the engine ECU.
     #[arg(long, default_value = "0x01", value_parser = parse_hex_u8)]
     address: u8,
     /// Serial baud rate.
     #[arg(long, default_value_t = 10400)]
     baud: u32,
-    /// The cable does not echo transmitted bytes.
+    /// With --slow-init: the cable does not echo transmitted bytes.
     #[arg(long)]
     no_echo: bool,
     /// Record every byte sent and received to this file (see docs/capture.md).
@@ -500,7 +510,31 @@ fn probe(port: &str, address: u8, baud: u32, trace: Option<&Path>) -> Result<(),
     Ok(())
 }
 
-/// Open whichever module the flags select. Only K-line KW1281 hardware is wired up so far.
+/// KWP2000 over a TP2.0 channel on a CAN interface (Linux only).
+fn connect_tp20(iface: &str, target: &Target) -> Result<Connection, String> {
+    let can = open_can(iface).map_err(|e| e.to_string())?;
+    let (transport, report) = trace_transport(can, target.trace.as_deref())?;
+    eprintln!(
+        "Opening a TP2.0 channel to module {:#04X} on {iface}...",
+        target.address
+    );
+    let link = Tp20Link::open(
+        transport,
+        SystemClock::new(),
+        &Tp20Config::new(target.address),
+    )
+    .map_err(|e| e.to_string())?;
+    let client = Tp20KwpClient::new(link);
+    Ok(Connection {
+        module: Box::new(
+            KwpModule::start(client, target.address, "kwp2000-tp20").map_err(|e| e.to_string())?,
+        ),
+        _trace: report,
+    })
+}
+
+/// Open whichever module the flags select: a virtual module, KW1281 (`--slow-init`),
+/// KWP2000 on K-line (`--fast-init`), or KWP2000 over TP2.0 on CAN (`--can`).
 fn connect(target: &Target) -> Result<Connection, String> {
     let trace = target.trace.as_deref();
     if target.simulate {
@@ -519,16 +553,53 @@ fn connect(target: &Target) -> Result<Connection, String> {
             _trace: report,
         });
     }
+    if target.simulate_kwp {
+        eprintln!("[simulated] virtual KWP2000 module (K-line fast init)");
+        let (transport, report) = trace_transport(virtual_kwp_bus(), trace)?;
+        return Ok(Connection {
+            module: Box::new(virtual_kwp_module_over(transport).map_err(|e| e.to_string())?),
+            _trace: report,
+        });
+    }
+    if let Some(iface) = &target.can {
+        if target.port.is_some() {
+            return Err("choose either --port (K-line) or --can (CAN), not both".into());
+        }
+        return connect_tp20(iface, target);
+    }
     let Some(port) = &target.port else {
         return Err(
-            "no connection chosen: pass --simulate, --simulate-kw1281, or --port <PORT> --slow-init"
+            "no connection chosen: pass --simulate, --simulate-kw1281, --simulate-kwp, \
+             --port <PORT> with --slow-init (KW1281) or --fast-init (KWP2000), or --can <IFACE>"
                 .into(),
         );
     };
+    if target.fast_init {
+        let serial = KLineSerial::open(port, target.baud).map_err(|e| e.to_string())?;
+        let (transport, report) = trace_transport(serial, trace)?;
+        let mut kwp = KwpClient::new(transport, KwpConfig::new(target.address));
+        eprintln!(
+            "Fast init to module {:#04X} on {port} at {} baud...",
+            target.address, target.baud
+        );
+        let kb = kwp.start_communication().map_err(|e| {
+            format!("{e}\nNo answer to fast init. Older modules use 5-baud init: try --slow-init.")
+        })?;
+        eprintln!(
+            "StartCommunication OK, key bytes {:#04X} {:#04X}",
+            kb.kb1, kb.kb2
+        );
+        return Ok(Connection {
+            module: Box::new(
+                KwpModule::start(kwp, target.address, "kwp2000").map_err(|e| e.to_string())?,
+            ),
+            _trace: report,
+        });
+    }
     if !target.slow_init {
         return Err(
-            "only KW1281 (older modules) is wired up for hardware so far: add --slow-init. \
-             KWP2000 and UDS over hardware are not connected to scan/dtc yet"
+            "add --slow-init (older KW1281 modules) or --fast-init (KWP2000 modules). \
+             UDS over hardware is not connected to scan/dtc yet"
                 .into(),
         );
     }
@@ -554,12 +625,14 @@ fn scan(target: &Target) -> Result<(), String> {
     let ident = conn.module.identify().map_err(|e| e.to_string())?;
     let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not supported)".into());
     println!("Part number      : {}", show(&ident.part_number));
-    // KW1281 modules report free-form lines instead of the standard items.
+    // KW1281 and KWP2000 modules report free-form lines instead of the standard items.
     if ident.lines.is_empty() {
         println!("Software version : {}", show(&ident.software_version));
         println!("VIN              : {}", show(&ident.vin));
     }
-    for line in ident.lines.iter().skip(1) {
+    // When a part number was picked out, it is the first line; otherwise show every line.
+    let already_shown = usize::from(ident.part_number.is_some());
+    for line in ident.lines.iter().skip(already_shown) {
         println!("Ident            : {line}");
     }
     Ok(())
@@ -673,7 +746,7 @@ fn backup_list(store: &StoreArg) -> Result<(), String> {
                 "{}  {} UTC  {} fault codes cleared ({} stored)  [{:?}]",
                 r.id,
                 format_unix(r.created_unix),
-                r.protocol,
+                r.module.as_deref().unwrap_or(&r.protocol),
                 r.codes.len(),
                 r.status
             );
