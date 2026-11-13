@@ -105,6 +105,16 @@ impl DataSet {
         self.dtcs.get(&(space, code.to_string()))
     }
 
+    /// Description for a code as displayed to the user: `P0171-00` is an SAE code (the
+    /// failure-type suffix is ignored), a bare 5-digit number is a VAG-style code.
+    pub fn describe_displayed_code(&self, text: &str) -> Option<&str> {
+        let (space, code) = match text.split_once('-') {
+            Some((base, _)) => (CodeSpace::SaeJ2012, base),
+            None => (CodeSpace::Vag5Digit, text),
+        };
+        self.dtc(space, code).map(|d| d.description.as_str())
+    }
+
     pub fn block(&self, protocol: Protocol, module_address: u8, group: u8) -> Option<&BlockDef> {
         self.blocks.get(&(protocol, module_address, group))
     }

@@ -129,6 +129,12 @@ pub trait Module {
     /// Fault-code access, including the guarded clear ([`plan_clear`] / [`apply_clear`]).
     fn faults(&mut self) -> &mut dyn FaultAccess;
 
+    /// Keep the session alive while idle (modules drop an idle session after a few
+    /// seconds). Long-running front ends call this between requests.
+    fn keep_alive(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Live measuring data, if this kind of module supports it (KW1281 only so far).
     fn live(&mut self) -> Option<&mut dyn LiveData> {
         None
@@ -151,6 +157,10 @@ impl<T: Transport, C: Clock> Module for UdsClient<T, C> {
 
     fn faults(&mut self) -> &mut dyn FaultAccess {
         self
+    }
+
+    fn keep_alive(&mut self) -> Result<()> {
+        self.tester_present()
     }
 }
 

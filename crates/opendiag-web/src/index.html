@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenDiag</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>OpenDiag</h1>
+  <span id="version"></span>
+</header>
+<div id="banner" hidden></div>
+<div id="error" role="alert" hidden></div>
+<main>
+  <section>
+    <h2>Connection</h2>
+    <dl id="info"></dl>
+  </section>
+  <section>
+    <h2>Identification</h2>
+    <dl id="ident"></dl>
+  </section>
+  <section>
+    <h2>Fault codes <button id="refresh-dtcs" type="button">Read again</button></h2>
+    <p id="dtc-empty" hidden>No trouble codes stored.</p>
+    <table id="dtcs" hidden>
+      <thead><tr><th>Code</th><th>Status</th><th>Flags</th><th>Meaning</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Live data</h2>
+    <p class="note">Raw measuring-block cells (formula, A, B). Values are not converted to units; the chart plots A&times;256+B.</p>
+    <label>Groups <input id="groups" value="1" size="12" inputmode="numeric" pattern="[0-9,]*"></label>
+    <button id="live-toggle" type="button">Start</button>
+    <table id="live" hidden>
+      <thead><tr><th>Group</th><th>Cell</th><th>Formula</th><th>A</th><th>B</th><th>Raw</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <svg id="chart" viewBox="0 0 600 160" role="img" aria-label="Live raw values" hidden></svg>
+  </section>
+  <p class="note">Read-only. Clearing codes and changing adaptation are only possible from the command line, with a backup first.</p>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

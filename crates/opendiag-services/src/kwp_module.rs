@@ -121,6 +121,10 @@ impl<S: KwpService> Module for KwpModule<S> {
     fn faults(&mut self) -> &mut dyn FaultAccess {
         self
     }
+
+    fn keep_alive(&mut self) -> Result<()> {
+        self.service.tester_present()
+    }
 }
 
 impl<S: KwpService> FaultAccess for KwpModule<S> {

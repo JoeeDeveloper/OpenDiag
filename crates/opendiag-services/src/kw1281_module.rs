@@ -71,6 +71,10 @@ impl<T: Transport, C: Clock> Module for Kw1281Module<T, C> {
         self
     }
 
+    fn keep_alive(&mut self) -> Result<()> {
+        self.client.keep_alive()
+    }
+
     fn live(&mut self) -> Option<&mut dyn LiveData> {
         Some(self)
     }

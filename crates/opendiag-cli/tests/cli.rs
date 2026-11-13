@@ -948,3 +948,140 @@ fn a_clear_snapshot_cannot_be_restored() {
     std::fs::remove_file(&bk).unwrap();
     assert!(!ok && err.contains("cannot be written back"), "{err}");
 }
+
+// ---- opendiag serve (read-only local web interface) ----
+
+struct Server {
+    child: std::process::Child,
+    port: u16,
+    token: String,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_server(args: &[&str]) -> Server {
+    use std::io::{BufRead, BufReader};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_opendiag"))
+        .arg("serve")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn opendiag serve");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("read url");
+    let url = line.trim();
+    let rest = url
+        .strip_prefix("http://127.0.0.1:")
+        .unwrap_or_else(|| panic!("unexpected first line: {url:?}"));
+    let (port, token) = rest.split_once("/?t=").expect("url shape");
+    Server {
+        port: port.parse().expect("port"),
+        token: token.to_string(),
+        child,
+    }
+}
+
+/// Minimal HTTP/1.1 client: returns (status, lowercase header block, body).
+fn http(
+    port: u16,
+    method: &str,
+    path: &str,
+    host: &str,
+    token: Option<&str>,
+) -> (u16, String, String) {
+    use std::io::Read;
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if let Some(t) = token {
+        req.push_str(&format!("X-OpenDiag-Token: {t}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).unwrap();
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).expect("read response");
+    let (head, body) = raw.split_once("\r\n\r\n").expect("response shape");
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head.to_ascii_lowercase(), body.to_string())
+}
+
+#[test]
+fn serve_answers_over_real_http_with_security_headers() {
+    let srv = start_server(&["--simulate-kw1281"]);
+    let host = format!("127.0.0.1:{}", srv.port);
+
+    let (status, head, body) = http(srv.port, "GET", &format!("/?t={}", srv.token), &host, None);
+    assert_eq!(status, 200);
+    assert!(body.contains("<title>OpenDiag</title>"));
+    assert!(
+        head.contains("content-security-policy: default-src 'none'"),
+        "{head}"
+    );
+    assert!(head.contains("x-content-type-options: nosniff"));
+    assert!(head.contains("cache-control: no-store"));
+
+    let (status, _, body) = http(srv.port, "GET", "/api/ident", &host, Some(&srv.token));
+    assert_eq!(status, 200);
+    assert!(body.contains("VIRTUAL ENGINE ECU"), "{body}");
+    let (status, _, body) = http(srv.port, "GET", "/api/info", &host, Some(&srv.token));
+    assert_eq!(status, 200);
+    assert!(body.contains("\"simulated\":true"));
+    let (status, _, body) = http(
+        srv.port,
+        "GET",
+        "/api/live?groups=1",
+        &host,
+        Some(&srv.token),
+    );
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn serve_refuses_bad_token_host_and_methods_over_real_http() {
+    let srv = start_server(&["--simulate-kw1281"]);
+    let host = format!("127.0.0.1:{}", srv.port);
+
+    assert_eq!(http(srv.port, "GET", "/api/dtcs", &host, None).0, 401);
+    assert_eq!(
+        http(srv.port, "GET", "/api/dtcs", &host, Some("wrong")).0,
+        401
+    );
+    assert_eq!(http(srv.port, "GET", "/", &host, None).0, 401);
+    // DNS rebinding: right token, wrong Host.
+    let (status, _, _) = http(
+        srv.port,
+        "GET",
+        "/api/dtcs",
+        "evil.example",
+        Some(&srv.token),
+    );
+    assert_eq!(status, 403);
+    // Read-only: no method other than GET, whatever the token.
+    for m in ["POST", "PUT", "DELETE"] {
+        assert_eq!(
+            http(srv.port, m, "/api/dtcs", &host, Some(&srv.token)).0,
+            405,
+            "{m}"
+        );
+    }
+    // Refusals still carry the security headers.
+    let (_, head, _) = http(srv.port, "GET", "/api/dtcs", &host, None);
+    assert!(head.contains("content-security-policy"));
+}
+
+#[test]
+fn serve_uses_a_fresh_token_each_run() {
+    let a = start_server(&["--simulate-kw1281"]);
+    let b = start_server(&["--simulate-kw1281"]);
+    assert_ne!(a.token, b.token);
+    assert_eq!(a.token.len(), 32);
+}

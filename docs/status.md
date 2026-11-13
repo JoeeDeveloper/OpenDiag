@@ -79,6 +79,15 @@ banner). **Its visual layout has not been inspected in real browsers or print pr
 PDF output (print to PDF from a browser). It covers identification and fault codes only: no live data, history or
 vehicle-level summary yet.
 
+## Web interface
+
+`opendiag serve` is a read-only local page (identification, fault codes, raw live data). The request handler is
+tested without sockets (token, Host check, GET-only, no write endpoint, 501/503 paths, no inline script or HTML
+injection in the page code) and over real HTTP against the virtual KW1281 module. It was opened once in the
+built-in browser against the simulator and rendered with no console errors. **Not verified:** other browsers,
+small screens, a long live session, any real module. It has no write features by design, and live data is KW1281
+only. See [web.md](web.md).
+
 ## Not started (from the plan)
 
 J2534 and ELM327 transports, PCAN, coding/adaptation/output tests, backup/restore,

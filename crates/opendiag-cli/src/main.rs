@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use opendiag_core::Error;
-use opendiag_data::{json_schema_pretty, load_dir, CodeSpace, DataSet};
+use opendiag_data::{json_schema_pretty, load_dir, DataSet};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig, KwpService};
@@ -83,6 +83,15 @@ enum Cmd {
         /// Write the HTML here instead of standard output.
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Serve a read-only web page for the connected module on 127.0.0.1 (this computer only).
+    /// Prints a URL with a one-time token; open that URL. Stop with Ctrl-C.
+    Serve {
+        #[command(flatten)]
+        target: Target,
+        /// Port to listen on (default: any free port).
+        #[arg(long, default_value_t = 0)]
+        listen_port: u16,
     },
     /// List serial ports (to find your K-line cable).
     Ports,
@@ -324,6 +333,10 @@ fn main() -> ExitCode {
             log_cmd(&target, &cfg, out.as_deref())
         }
         Some(Cmd::Report { target, out }) => report_cmd(&target, out.as_deref()),
+        Some(Cmd::Serve {
+            target,
+            listen_port,
+        }) => serve_cmd(&target, listen_port),
         Some(Cmd::Ports) => ports(),
         Some(Cmd::Probe {
             port,
@@ -749,6 +762,87 @@ fn describe_connection(t: &Target) -> (String, bool) {
     )
 }
 
+/// Random per-run token: 128 bits from the operating system, hex encoded.
+fn random_token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("no secure random source: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Read-only local web interface. Binds to loopback only; every request goes
+/// through `opendiag_web::App::handle`, which enforces the Host, token and
+/// method rules. Single-threaded: requests are served one at a time, which also
+/// keeps the diagnostic session from being used concurrently.
+fn serve_cmd(target: &Target, listen_port: u16) -> Result<(), String> {
+    let conn = connect(target)?;
+    let Connection { module, _trace } = conn;
+    let mut module = module;
+    let module_name = module.faults().describe();
+    let (connection, simulated) = describe_connection(target);
+
+    let server = tiny_http::Server::http(("127.0.0.1", listen_port))
+        .map_err(|e| format!("cannot listen on 127.0.0.1:{listen_port}: {e}"))?;
+    let port = server
+        .server_addr()
+        .to_ip()
+        .map(|a| a.port())
+        .ok_or("cannot determine the listening port")?;
+    let token = random_token()?;
+    let info = opendiag_web::Info {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        connection,
+        simulated,
+        module: module_name,
+    };
+    let mut app = opendiag_web::App::new(module, load_data(), info, token.clone(), port);
+
+    // First line on stdout, flushed: scripts and tests read the URL from here.
+    println!("http://127.0.0.1:{port}/?t={token}");
+    io::stdout().flush().ok();
+    eprintln!("Serving read-only on 127.0.0.1:{port} (this computer only). Stop with Ctrl-C.");
+
+    loop {
+        match server.recv_timeout(Duration::from_secs(2)) {
+            Ok(Some(request)) => answer(&mut app, request),
+            // Idle: keep the diagnostic session alive.
+            Ok(None) => app.tick(),
+            Err(e) => return Err(format!("server error: {e}")),
+        }
+    }
+}
+
+fn answer(app: &mut opendiag_web::App, request: tiny_http::Request) {
+    let method = request.method().to_string();
+    let target = request.url().to_string();
+    let header = |name: &'static str| {
+        request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv(name))
+            .map(|h| h.value.as_str().to_string())
+    };
+    let host = header("Host");
+    let token = header("X-OpenDiag-Token");
+    let response = app.handle(&opendiag_web::Request {
+        method: &method,
+        target: &target,
+        host: host.as_deref(),
+        token_header: token.as_deref(),
+    });
+    let mut out = tiny_http::Response::from_data(response.body).with_status_code(response.status);
+    let content_type = [("Content-Type", response.content_type)];
+    for (name, value) in content_type
+        .iter()
+        .chain(opendiag_web::SECURITY_HEADERS.iter())
+    {
+        if let Ok(h) = tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()) {
+            out.add_header(h);
+        }
+    }
+    // The client may have gone away; nothing to do about that.
+    let _ = request.respond(out);
+}
+
 fn report_cmd(target: &Target, out: Option<&Path>) -> Result<(), String> {
     let mut conn = connect(target)?;
     let data = load_data();
@@ -958,11 +1052,7 @@ fn load_data() -> Option<DataSet> {
 
 /// Look up a displayed code: `P0171-00` is an SAE code, a bare 5-digit code is VAG-style.
 fn describe(data: Option<&DataSet>, text: &str) -> Option<String> {
-    let (space, code) = match text.split_once('-') {
-        Some((base, _)) => (CodeSpace::SaeJ2012, base),
-        None => (CodeSpace::Vag5Digit, text),
-    };
-    data?.dtc(space, code).map(|d| d.description.clone())
+    data?.describe_displayed_code(text).map(str::to_string)
 }
 
 fn print_dtcs(dtcs: &[DtcReport], data: Option<&DataSet>) {

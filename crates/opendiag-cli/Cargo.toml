@@ -17,7 +17,10 @@ opendiag-data = { path = "../opendiag-data" }
 opendiag-proto = { path = "../opendiag-proto" }
 opendiag-services = { path = "../opendiag-services" }
 opendiag-transport = { path = "../opendiag-transport" }
+opendiag-web = { path = "../opendiag-web" }
 clap = { version = "4", features = ["derive"] }
+getrandom = "0.2"
+tiny_http = "0.12"
 
 [dev-dependencies]
 serde_json = "1"
