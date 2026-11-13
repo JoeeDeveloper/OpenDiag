@@ -1,0 +1,11 @@
+[package]
+name = "opendiag-services"
+description = "Diagnostic services: DTCs, measuring blocks, ident, coding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

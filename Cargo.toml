@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/opendiag-core",
+    "crates/opendiag-transport",
+    "crates/opendiag-proto",
+    "crates/opendiag-services",
+    "crates/opendiag-data",
+    "crates/opendiag-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.75"
+repository = "https://github.com/JoeeDeveloper/opendiag"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
