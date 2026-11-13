@@ -11,5 +11,8 @@ repository.workspace = true
 opendiag-core = { path = "../opendiag-core" }
 serialport = { version = "4", default-features = false }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = "3"
+
 [lints]
 workspace = true

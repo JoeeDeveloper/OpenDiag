@@ -4,6 +4,8 @@
 mod replay;
 mod serial;
 mod simulator;
+#[cfg(target_os = "linux")]
+mod socketcan_driver;
 
 use std::time::Duration;
 
@@ -12,6 +14,8 @@ use opendiag_core::Result;
 pub use replay::Replay;
 pub use serial::{list_serial_ports, KLine, KLineSerial, PortInfo, SerialIo};
 pub use simulator::Simulator;
+#[cfg(target_os = "linux")]
+pub use socketcan_driver::SocketCan;
 
 /// A unit of data on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
