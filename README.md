@@ -14,6 +14,13 @@ An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi
 | CLI | `scan`, `dtc read/clear`, `report` (standalone HTML), `log` (live data to CSV), `adaptation read/set`, `backup list/restore`, `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
 | Data | Open YAML format with validator and generated JSON Schema (CC0-1.0) |
 
+## Install
+
+Download the archive for your platform from the project's Releases page, unpack it, and run `opendiag` from inside
+the unpacked folder (it finds the open data files in `./data`). Check the download against `SHA256SUMS`. The
+binaries are not code-signed, so Windows and macOS will warn; see [docs/releasing.md](docs/releasing.md).
+Or build from source with `cargo build --release -p opendiag-cli`.
+
 Try it without a car:
 
 ```bash

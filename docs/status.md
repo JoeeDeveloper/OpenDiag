@@ -62,6 +62,15 @@ Real captures are the only thing that can, which is why `--trace`/`capture` and 
 - CI: the macOS runner sometimes fails to start (capacity), unrelated to the code. `main` has no branch
   protection or required checks.
 
+## Releases
+
+A release pipeline exists ([releasing.md](releasing.md)). A dry run on 2026-11-13 built all four targets (Linux
+musl, Windows, macOS arm64, macOS Intel), smoke-tested each (Linux, Windows and macOS arm64 natively; Intel under
+Rosetta), and produced archives whose SHA-256 checksums I verified. The CI-built Windows package was also
+downloaded and smoke-tested locally. **Not yet exercised:** the publish step (needs a pushed tag), and anything
+beyond the simulators: a package passing its smoke test says the program starts and the virtual modules work, not
+that it works on a vehicle. Binaries are unsigned.
+
 ## Reports
 
 `opendiag report` produces a standalone HTML file. It is checked structurally by tests (escaping with hostile
