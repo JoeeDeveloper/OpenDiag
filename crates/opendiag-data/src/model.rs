@@ -33,7 +33,7 @@ pub struct Provenance {
     /// Who wrote or captured this data.
     pub author: String,
     pub source: Source,
-    /// SPDX id of the data licence: `CC0-1.0`, `CC-BY-4.0` or `GPL-3.0-or-later`.
+    /// SPDX id of the data licence. Must be `CC0-1.0`: all contributed data is public domain.
     pub license: String,
     /// Date of capture (`YYYY-MM-DD`). Required when `source` is `own_vehicle_capture`.
     pub captured_on: Option<String>,

@@ -12,7 +12,7 @@ kind: modules            # modules | dtcs | measuring_blocks
 provenance:
   author: Your Name
   source: own_vehicle_capture   # original_work | own_vehicle_capture | public_specification
-  license: CC0-1.0              # CC0-1.0 | CC-BY-4.0 | GPL-3.0-or-later
+  license: CC0-1.0              # the only accepted value, see "Licence" below
   captured_on: 2026-11-13       # required for own_vehicle_capture
   verified: false               # true only once checked on a real vehicle
   notes: Optional free text.
@@ -61,6 +61,9 @@ cargo run -p opendiag-cli -- data schema > data/schema/opendiag-data-v0.schema.j
 `opendiag dtc read` shows descriptions automatically when it finds `./data` or the directory in
 `$OPENDIAG_DATA`.
 
-## Open questions
+## Licence
 
-The data licence default (`CC0-1.0`) is a project decision that has not been made final.
+All contributed data is released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)
+(public domain dedication), separately from the GPL-3.0 licence of the code. By submitting a data
+file you confirm you have the right to dedicate it, which is why the clean-room rules above matter:
+you cannot dedicate something you copied. The validator accepts only `CC0-1.0`.

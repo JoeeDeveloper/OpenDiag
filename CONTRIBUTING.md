@@ -12,4 +12,4 @@
 5. Tests must not need hardware. Use the Simulator or Replay transports.
 6. Writes to a vehicle must be gated behind the unlock mode with backup and confirmation.
 
-Data contributions (modules, DTCs, labels) need a `captured_on` provenance field and must come from your own vehicle or original work.
+Data contributions (modules, DTCs, labels) need provenance, must come from your own vehicle, a public standard, or original work, and are released under CC0-1.0 (public domain). See [docs/data-format.md](docs/data-format.md).

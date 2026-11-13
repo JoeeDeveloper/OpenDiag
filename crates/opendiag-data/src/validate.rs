@@ -6,7 +6,8 @@ use crate::model::{
     BlockDef, Body, CodeSpace, DataFile, DtcDef, ModuleDef, Protocol, Provenance, Source, FORMAT,
 };
 
-const LICENSES: [&str; 3] = ["CC0-1.0", "CC-BY-4.0", "GPL-3.0-or-later"];
+/// Contributed data is dedicated to the public domain (project decision, 2026-11-13).
+const LICENSES: [&str; 1] = ["CC0-1.0"];
 const MAX_DESCRIPTION: usize = 200;
 const MAX_KW1281_CELLS: usize = 4;
 

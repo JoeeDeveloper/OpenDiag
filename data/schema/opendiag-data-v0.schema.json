@@ -159,7 +159,7 @@
           ]
         },
         "license": {
-          "description": "SPDX id of the data licence: `CC0-1.0`, `CC-BY-4.0` or `GPL-3.0-or-later`.",
+          "description": "SPDX id of the data licence. Must be `CC0-1.0`: all contributed data is public domain.",
           "type": "string"
         },
         "notes": {
