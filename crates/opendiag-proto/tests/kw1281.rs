@@ -242,6 +242,158 @@ fn adaptation_save_rejects_oversized_workshop_codes_and_refusals() {
         .contains("NAK"));
 }
 
+/// Delivers the module's bytes with chosen faults, to test what the client does about them.
+struct Faulty {
+    inner: Kw1281Sim,
+    /// Replace the Nth received byte (counting from the first byte after init) with this value.
+    corrupt_at: Option<(usize, u8)>,
+    received: usize,
+}
+
+impl opendiag_transport::Transport for Faulty {
+    fn send(&mut self, f: &opendiag_transport::Frame) -> opendiag_core::Result<()> {
+        self.inner.send(f)
+    }
+    fn recv(&mut self, t: Duration) -> opendiag_core::Result<opendiag_transport::Frame> {
+        let f = self.inner.recv(t)?;
+        let opendiag_transport::Frame::Raw(mut bytes) = f else {
+            return Ok(f);
+        };
+        for b in &mut bytes {
+            if let Some((n, v)) = self.corrupt_at {
+                if self.received == n {
+                    *b = v;
+                }
+            }
+            self.received += 1;
+        }
+        Ok(opendiag_transport::Frame::Raw(bytes))
+    }
+    fn set_baud(&mut self, b: u32) -> opendiag_core::Result<()> {
+        self.inner.set_baud(b)
+    }
+    fn slow_init(&mut self, a: u8) -> opendiag_core::Result<()> {
+        self.inner.slow_init(a)
+    }
+    fn capabilities(&self) -> opendiag_transport::Capabilities {
+        self.inner.capabilities()
+    }
+}
+
+/// What the client reads after `slow_init`: sync, kb1, kb2 (3 bytes), the echo of its own
+/// keyword complement (1 byte), then the first block, which starts with its length byte.
+const FIRST_BLOCK_LEN_AT: usize = 4;
+
+#[test]
+fn an_invalid_block_length_is_not_acknowledged() {
+    // Corrupt the first block's length to 1, which can never be valid.
+    let t = Faulty {
+        inner: demo_sim(),
+        corrupt_at: Some((FIRST_BLOCK_LEN_AT, 0x01)),
+        received: 0,
+    };
+    let mut c = Kw1281Client::new(t, FakeClock::new(), Kw1281Config::default());
+    let sent_before = c.transport().inner.bytes_received();
+    let err = c.connect(0x01).unwrap_err().to_string();
+    assert!(
+        err.contains("block length") && err.contains("not acknowledging"),
+        "{err}"
+    );
+    // The only byte the client sent was the keyword complement: no ack for the bad length.
+    assert_eq!(c.transport().inner.bytes_received() - sent_before, 1);
+    assert!(c.is_out_of_sync());
+}
+
+#[test]
+fn an_out_of_sequence_block_counter_is_not_acknowledged() {
+    // The first block's counter is unpredictable, but each later one must follow the
+    // previous. Where the second block's counter sits in the byte stream:
+    //   first block   = len 14 (counter, title, 11 text bytes, end): 14 acknowledged bytes,
+    //                   each followed by the echo of our complement, plus the end byte
+    //                   = 2*14 + 1 = 29 bytes, starting at FIRST_BLOCK_LEN_AT
+    //   our ack block = 3 acknowledged bytes (echo + module's complement) + end echo = 7 bytes
+    //   second block  = len (+echo), then its counter
+    let second_counter_at = FIRST_BLOCK_LEN_AT + 29 + 7 + 2;
+    let t = Faulty {
+        inner: demo_sim(),
+        corrupt_at: Some((second_counter_at, 0x7F)),
+        received: 0,
+    };
+    let mut c = Kw1281Client::new(t, FakeClock::new(), Kw1281Config::default());
+    let err = c.connect(0x01).unwrap_err().to_string();
+    assert!(
+        err.contains("block counter 0x7F") && err.contains("not acknowledging"),
+        "{err}"
+    );
+    assert!(c.is_out_of_sync());
+    // The module never saw an acknowledgement of the bad counter, so it saw no violation.
+    assert!(
+        c.transport().inner.violations().is_empty(),
+        "{:?}",
+        c.transport().inner.violations()
+    );
+}
+
+#[test]
+fn after_an_error_nothing_more_is_sent_into_the_session() {
+    let t = Faulty {
+        inner: demo_sim(),
+        corrupt_at: Some((FIRST_BLOCK_LEN_AT, 0x01)),
+        received: 0,
+    };
+    let mut c = Kw1281Client::new(t, FakeClock::new(), Kw1281Config::default());
+    assert!(c.connect(0x01).is_err());
+    assert!(c.is_out_of_sync());
+
+    let before = c.transport().inner.bytes_received();
+    c.set_write_mode(WriteMode::Unlocked);
+    for result in [
+        c.read_fault_codes().map(|_| ()),
+        c.clear_fault_codes().map(|_| ()),
+        c.adaptation_save(4, 1, 0),
+        c.keep_alive(),
+    ] {
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("out of sync") || err.contains("reconnect"),
+            "{err}"
+        );
+    }
+    c.end().unwrap(); // does not send either
+    assert_eq!(
+        c.transport().inner.bytes_received(),
+        before,
+        "not a single byte was sent"
+    );
+}
+
+#[test]
+fn reconnecting_clears_the_out_of_sync_state() {
+    let t = Faulty {
+        inner: demo_sim(),
+        corrupt_at: Some((FIRST_BLOCK_LEN_AT, 0x01)),
+        received: 0,
+    };
+    let mut c = Kw1281Client::new(t, FakeClock::new(), Kw1281Config::default());
+    assert!(c.connect(0x01).is_err());
+    // The fault was one-off; a fresh init works again.
+    c.connect(0x01).unwrap();
+    assert!(!c.is_out_of_sync());
+    assert_eq!(c.read_fault_codes().unwrap().len(), 2);
+}
+
+#[test]
+fn a_module_nak_does_not_desync_the_session() {
+    let mut c = adaptation_client(demo_sim().adaptation(4, 1));
+    assert!(c
+        .adaptation_read(99)
+        .unwrap_err()
+        .to_string()
+        .contains("NAK"));
+    assert!(!c.is_out_of_sync(), "a NAK is a legitimate, in-sync reply");
+    assert_eq!(c.adaptation_read(4).unwrap(), 1);
+}
+
 #[test]
 fn end_closes_the_session() {
     let mut c = client(demo_sim());

@@ -16,7 +16,7 @@
 
 use opendiag_core::{Error, Result};
 
-use crate::backup::{BackupStatus, BackupStore, NewBackup};
+use crate::backup::{with_record_failure, BackupStatus, BackupStore, NewBackup};
 
 /// Permission to write, issued only inside this crate by the guarded flow.
 #[derive(Debug)]
@@ -133,51 +133,70 @@ fn apply_inner(
         restores,
     })?;
     let id = record.id.clone();
-    let fail = |status: BackupStatus, note: String| -> Result<()> {
-        store.set_status(&id, status, Some(note)).map(|_| ())
-    };
+    // From here on the module may have been changed, so a failure to update the
+    // record is reported *with* the real outcome, never instead of it.
+    let record_status =
+        |status: BackupStatus, note: Option<String>| store.set_status(&id, status, note);
 
     // 4. Test, then save.
     let token = WriteToken::new();
     if let Err(e) = access.test(&token, change.channel, change.new) {
-        fail(BackupStatus::SaveFailed, format!("test failed: {e}"))?;
-        return Err(protocol(format!(
-            "the module rejected the test; nothing was stored (backup {id})"
+        let update = record_status(BackupStatus::SaveFailed, Some(format!("test failed: {e}")));
+        return Err(protocol(with_record_failure(
+            format!("the module rejected the test; nothing was stored (backup {id})"),
+            &id,
+            update,
         )));
     }
     if let Err(e) = access.save(&token, change.channel, change.new, workshop_code) {
-        fail(BackupStatus::SaveFailed, format!("save failed: {e}"))?;
-        return Err(protocol(format!(
-            "the save failed: {e}. The value may be unchanged; check it with `adaptation read` (backup {id})"
+        let update = record_status(BackupStatus::SaveFailed, Some(format!("save failed: {e}")));
+        return Err(protocol(with_record_failure(
+            format!(
+                "the save failed: {e}. The value may be unchanged; check it with `adaptation read` (backup {id})"
+            ),
+            &id,
+            update,
         )));
     }
 
     // 5. Read it back. The save reply is not trusted on its own.
     match access.read(change.channel) {
-        Ok(v) if v == change.new => {
-            store.set_status(&id, BackupStatus::Verified, None)?;
-            Ok(Applied { backup_id: id })
-        }
-        Ok(v) => {
-            fail(
-                BackupStatus::VerificationFailed,
-                format!("reads back {v}, expected {}", change.new),
-            )?;
-            Err(protocol(format!(
-                "the module accepted the save but channel {} reads {v}, not {}. \
-                 Backup {id} holds the old value {}; restore it with `opendiag backup restore {id}`",
+        Ok(v) if v == change.new => match record_status(BackupStatus::Verified, None) {
+            Ok(_) => Ok(Applied { backup_id: id }),
+            Err(e) => Err(protocol(format!(
+                "the change WAS applied and verified (channel {} reads {}), but its backup record {id} \
+                 could not be updated: {e}. The record still says `planned`; it holds the old value {}",
                 change.channel, change.new, change.old
+            ))),
+        },
+        Ok(v) => {
+            let update = record_status(
+                BackupStatus::VerificationFailed,
+                Some(format!("reads back {v}, expected {}", change.new)),
+            );
+            Err(protocol(with_record_failure(
+                format!(
+                    "the module accepted the save but channel {} reads {v}, not {}. \
+                     Backup {id} holds the old value {}; restore it with `opendiag backup restore {id}`",
+                    change.channel, change.new, change.old
+                ),
+                &id,
+                update,
             )))
         }
         Err(e) => {
-            fail(
+            let update = record_status(
                 BackupStatus::VerificationFailed,
-                format!("could not read back: {e}"),
-            )?;
-            Err(protocol(format!(
-                "saved, but the value could not be read back to verify it ({e}). \
-                 Backup {id} holds the old value {}",
-                change.old
+                Some(format!("could not read back: {e}")),
+            );
+            Err(protocol(with_record_failure(
+                format!(
+                    "saved, but the value could not be read back to verify it ({e}). \
+                     Backup {id} holds the old value {}",
+                    change.old
+                ),
+                &id,
+                update,
             )))
         }
     }
@@ -243,6 +262,12 @@ pub fn apply_restore(
         confirmation,
         Some(record.id.clone()),
     )?;
-    store.set_status(&record.id, BackupStatus::Restored, None)?;
+    if let Err(e) = store.set_status(&record.id, BackupStatus::Restored, None) {
+        return Err(protocol(format!(
+            "the old value WAS restored and verified (this restore is backup {}), but backup {} \
+             could not be marked restored: {e}",
+            applied.backup_id, record.id
+        )));
+    }
     Ok(applied)
 }

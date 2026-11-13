@@ -31,7 +31,12 @@ pub struct KwpSim {
     cleared: bool,
     requests: Vec<Vec<u8>>,
     violations: Vec<String>,
+    /// Called the instant a modifying request arrives, before the module acts on it.
+    write_hook: Option<WriteHook>,
 }
+
+/// Callback run when a modifying request arrives (see [`KwpSim::on_write`]).
+type WriteHook = Box<dyn FnMut(&str)>;
 
 impl KwpSim {
     pub fn new(ecu: u8) -> Self {
@@ -50,7 +55,14 @@ impl KwpSim {
             cleared: false,
             requests: Vec::new(),
             violations: Vec::new(),
+            write_hook: None,
         }
+    }
+
+    /// Run `hook` with a short label ("clear") the moment a modifying request arrives.
+    pub fn on_write(mut self, hook: impl FnMut(&str) + 'static) -> Self {
+        self.write_hook = Some(Box::new(hook));
+        self
     }
 
     /// Whether the simulated cable echoes transmitted bytes (default true).
@@ -155,6 +167,9 @@ impl KwpSim {
                 self.reply(r);
             }
             0x14 => {
+                if let Some(h) = self.write_hook.as_mut() {
+                    h("clear");
+                }
                 self.faults.clear();
                 self.cleared = true;
                 self.reply(vec![0x54, arg(1), arg(2)]);

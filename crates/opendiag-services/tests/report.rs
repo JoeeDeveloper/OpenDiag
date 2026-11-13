@@ -162,6 +162,139 @@ fn standard_identification_items_are_shown_when_present() {
     assert!(h.contains("<dt>Software version</dt><dd>SW 2</dd>"));
 }
 
+/// Every tag name the renderer itself emits.
+const ALLOWED_TAGS: [&str; 26] = [
+    "!doctype", "html", "head", "meta", "title", "style", "body", "main", "h1", "h2", "p", "dl",
+    "dt", "dd", "table", "caption", "thead", "tbody", "tr", "th", "td", "code", "span", "ul", "li",
+    "/",
+];
+/// Attribute names the renderer itself emits (always with fixed values).
+const ALLOWED_ATTRS: [&str; 8] = [
+    "lang",
+    "charset",
+    "http-equiv",
+    "content",
+    "name",
+    "class",
+    "scope",
+    "role",
+];
+
+/// Parse every `<...>` in `html`; return a complaint for anything not emitted by the renderer.
+fn find_foreign_markup(html: &str) -> Option<String> {
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('>') else {
+            return Some("an unterminated tag".into());
+        };
+        let tag = &after[..end];
+        let name = tag
+            .trim_start_matches('/')
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or("");
+        let name = name.to_ascii_lowercase();
+        if !ALLOWED_TAGS.contains(&name.as_str()) && !name.is_empty() {
+            return Some(format!("unexpected tag <{tag}>"));
+        }
+        // Attribute names (skip the tags whose fixed attribute values contain spaces).
+        if !matches!(name.as_str(), "meta" | "html" | "!doctype") {
+            let mut attrs = tag[name.len().min(tag.len())..].trim();
+            while let Some(eq) = attrs.find('=') {
+                let attr = attrs[..eq]
+                    .trim()
+                    .rsplit(char::is_whitespace)
+                    .next()
+                    .unwrap_or("");
+                if !ALLOWED_ATTRS.contains(&attr) {
+                    return Some(format!("unexpected attribute `{attr}` in <{tag}>"));
+                }
+                let value_part = attrs[eq + 1..].trim_start();
+                let Some(stripped) = value_part.strip_prefix('"') else {
+                    return Some(format!("unquoted attribute value in <{tag}>"));
+                };
+                let Some(close) = stripped.find('"') else {
+                    return Some(format!("unterminated attribute value in <{tag}>"));
+                };
+                attrs = stripped[close + 1..].trim_start();
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    None
+}
+
+#[test]
+fn the_checker_itself_catches_injected_markup() {
+    assert!(
+        find_foreign_markup(&render_html(&base())).is_none(),
+        "a clean report passes"
+    );
+    for bad in [
+        "<b>x</b>",
+        "<script>1</script>",
+        "<td onclick=\"x\">",
+        "<p class=muted>",
+        "<img src=x>",
+        "<td",
+    ] {
+        assert!(find_foreign_markup(bad).is_some(), "{bad}");
+    }
+}
+
+#[test]
+fn random_hostile_strings_never_produce_foreign_markup() {
+    let alphabet: Vec<char> =
+        "<>\"'&/=;:()abcdefOnonerror=ScRiPt \t\r\n\u{1b}\u{0}\u{7}%#!?javascript\u{e9}\u{2603}"
+            .chars()
+            .collect();
+    let mut state: u64 = 0xDEC0DE;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) as usize
+    };
+    let text = move |next: &mut dyn FnMut() -> usize| {
+        let len = next() % 40;
+        (0..len)
+            .map(|_| alphabet[next() % alphabet.len()])
+            .collect::<String>()
+    };
+    for round in 0..3000 {
+        let mut r = base();
+        r.connection = text(&mut next);
+        r.module = Some(text(&mut next));
+        r.tool_version = text(&mut next);
+        r.ident = Ident {
+            part_number: Some(text(&mut next)),
+            software_version: Some(text(&mut next)),
+            vin: Some(text(&mut next)),
+            lines: vec![text(&mut next), text(&mut next), text(&mut next)],
+        };
+        r.faults = (0..3)
+            .map(|_| ReportFault {
+                text: text(&mut next),
+                status: next() as u8,
+                flags: vec![text(&mut next)],
+                description: Some(text(&mut next)),
+            })
+            .collect();
+        r.simulated = round % 2 == 0;
+        let html = render_html(&r);
+        if let Some(problem) = find_foreign_markup(&html) {
+            panic!("round {round}: {problem}");
+        }
+        for c in ['\u{1b}', '\u{0}', '\u{7}', '\r'] {
+            assert!(
+                !html.contains(c),
+                "round {round}: control character {c:?} survived"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_report_warns_about_privacy_and_verification() {
     let h = render_html(&base());

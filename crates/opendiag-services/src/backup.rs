@@ -58,6 +58,16 @@ pub struct BackupRecord {
     pub module: Option<String>,
 }
 
+/// Add to `msg` that the backup record could not be updated, if updating it failed.
+/// When a write has already happened, a bookkeeping failure must not hide what
+/// happened to the module, so it is appended to the real message instead of replacing it.
+pub(crate) fn with_record_failure(msg: String, id: &str, update: Result<BackupRecord>) -> String {
+    match update {
+        Ok(_) => msg,
+        Err(e) => format!("{msg}. In addition, backup record {id} could not be updated: {e}"),
+    }
+}
+
 fn io(e: impl std::fmt::Display) -> Error {
     Error::Io(e.to_string())
 }

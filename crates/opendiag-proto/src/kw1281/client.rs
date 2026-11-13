@@ -74,7 +74,13 @@ pub struct Kw1281Client<T: Transport, C: Clock> {
     clock: C,
     cfg: Kw1281Config,
     rx: VecDeque<u8>,
+    /// Counter for the next block in either direction (each block is previous + 1).
     next_counter: u8,
+    /// False until the first block of a session has been seen; its counter is not predictable.
+    counter_known: bool,
+    /// Set by the first error mid-session. A byte-by-byte protocol without checksums
+    /// cannot be trusted after that, so nothing more is sent into it.
+    poisoned: bool,
     write_mode: WriteMode,
 }
 
@@ -87,8 +93,16 @@ impl<T: Transport, C: Clock> Kw1281Client<T, C> {
             cfg,
             rx: VecDeque::new(),
             next_counter: 0,
+            counter_known: false,
+            poisoned: false,
             write_mode: WriteMode::ReadOnly,
         }
+    }
+
+    /// True once an error has left the session out of sync. Nothing more is sent
+    /// into it; reconnect to continue.
+    pub fn is_out_of_sync(&self) -> bool {
+        self.poisoned
     }
 
     pub fn transport(&self) -> &T {
@@ -165,13 +179,36 @@ impl<T: Transport, C: Clock> Kw1281Client<T, C> {
 
     // ---- block level ------------------------------------------------------
 
-    fn receive_block(&mut self) -> Result<Block> {
-        let len = self.read_and_ack()?;
-        if len < 3 {
-            return Err(protocol(format!("block length {len} is too short")));
+    /// Read a module byte and acknowledge it only if `valid`. Acknowledging a byte
+    /// the module never sent would feed it noise (and blocks have no checksum, so
+    /// noise could be read as a command). An invalid byte therefore gets silence.
+    fn read_and_ack_if(&mut self, what: &str, valid: impl FnOnce(u8) -> bool) -> Result<u8> {
+        let b = self.read_byte(self.cfg.byte_timeout)?;
+        if !valid(b) {
+            return Err(protocol(format!(
+                "{what} {b:#04X} is not valid; not acknowledging it"
+            )));
         }
-        let mut bytes = vec![len];
-        for i in 0..len {
+        self.pause(self.cfg.ack_delay);
+        self.write_byte(!b, false)?;
+        Ok(b)
+    }
+
+    fn receive_block(&mut self) -> Result<Block> {
+        let result = self.receive_block_inner();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn receive_block_inner(&mut self) -> Result<Block> {
+        let len = self.read_and_ack_if("block length", |l| l >= 3)?;
+        let (known, expected) = (self.counter_known, self.next_counter);
+        let counter = self.read_and_ack_if("block counter", |c| !known || c == expected)?;
+        let mut bytes = vec![len, counter];
+        // `len` counts the counter, title, data and end bytes; the counter is already read.
+        for i in 1..len {
             // The final byte is the block end, which is not acknowledged.
             let b = if i == len - 1 {
                 self.read_byte(self.cfg.byte_timeout)?
@@ -181,11 +218,25 @@ impl<T: Transport, C: Clock> Kw1281Client<T, C> {
             bytes.push(b);
         }
         let block = Block::decode(&bytes)?;
+        self.counter_known = true;
         self.next_counter = block.counter.wrapping_add(1);
         Ok(block)
     }
 
     fn send_block(&mut self, title: u8, data: &[u8]) -> Result<()> {
+        if self.poisoned {
+            return Err(protocol(
+                "the session is out of sync after an earlier error; reconnect to continue",
+            ));
+        }
+        let result = self.send_block_inner(title, data);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn send_block_inner(&mut self, title: u8, data: &[u8]) -> Result<()> {
         self.pause(self.cfg.block_gap);
         let bytes = Block {
             counter: self.next_counter,
@@ -234,6 +285,17 @@ impl<T: Transport, C: Clock> Kw1281Client<T, C> {
     /// 5-baud slow init to `address`, keyword exchange, then read identification.
     pub fn connect(&mut self, address: u8) -> Result<ConnectInfo> {
         self.rx.clear();
+        self.poisoned = false;
+        self.counter_known = false;
+        self.next_counter = 0;
+        let result = self.connect_inner(address);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn connect_inner(&mut self, address: u8) -> Result<ConnectInfo> {
         self.transport.slow_init(address)?;
 
         let sync = self.read_byte(self.cfg.init_timeout)?;
@@ -286,8 +348,12 @@ impl<T: Transport, C: Clock> Kw1281Client<T, C> {
         Ok(())
     }
 
-    /// Politely end the session. The module does not reply.
+    /// Politely end the session. The module does not reply. In a session known to
+    /// be out of sync nothing is sent (the module times out by itself).
     pub fn end(&mut self) -> Result<()> {
+        if self.poisoned {
+            return Ok(());
+        }
         self.send_block(title::END, &[])
     }
 

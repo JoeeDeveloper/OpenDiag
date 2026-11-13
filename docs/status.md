@@ -12,6 +12,15 @@ Last reviewed 2026-11-13. This is deliberately blunt.
 - robustness runs (random bytes into every decoder, ~1,250 corrupted sessions through every client)
   that found no panics or hangs.
 
+## No hardware for now
+
+Development is running entirely against simulators until a cable and a vehicle are available again (months).
+That makes the simulators the only oracle, so they are deliberately adversarial: virtual modules enforce the
+protocol rules and record every mistake, a fault-injecting transport corrupts traffic, and property tests check
+safety claims (notably "no write without a durable backup") rather than examples. The limit of this approach is
+unchanged: **a simulator written from the same documents as the code cannot reveal a shared misunderstanding.**
+Real captures are the only thing that can, which is why `--trace`/`capture` and `TraceReplay` exist.
+
 ## What nothing has proved
 
 **No part of this has ever talked to a real module.** In particular:

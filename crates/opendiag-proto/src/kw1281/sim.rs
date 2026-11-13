@@ -24,6 +24,9 @@ enum Phase {
     Ended,
 }
 
+/// Callback run when a modifying request arrives (see [`Kw1281Sim::on_write`]).
+type WriteHook = Box<dyn FnMut(&str)>;
+
 fn nak() -> Block {
     Block {
         counter: 0,
@@ -66,6 +69,11 @@ pub struct Kw1281Sim {
     bytes_received: usize,
     cleared: bool,
     violations: Vec<String>,
+    /// Called the instant a modifying request arrives, before the module acts on it.
+    write_hook: Option<WriteHook>,
+    /// After a wrong complement the module abandons the exchange and ignores the
+    /// tester until it is re-initialised (the most plausible real behaviour).
+    desynced: bool,
 }
 
 impl Default for Kw1281Sim {
@@ -99,6 +107,22 @@ impl Kw1281Sim {
             bytes_received: 0,
             cleared: false,
             violations: Vec::new(),
+            write_hook: None,
+            desynced: false,
+        }
+    }
+
+    /// Run `hook` with a short label ("clear", "adaptation test", "adaptation save") the
+    /// moment a modifying request arrives. Tests use it to check what must already be true
+    /// (such as a backup on disk) at the instant a write reaches the module.
+    pub fn on_write(mut self, hook: impl FnMut(&str) + 'static) -> Self {
+        self.write_hook = Some(Box::new(hook));
+        self
+    }
+
+    fn notify_write(&mut self, what: &str) {
+        if let Some(h) = self.write_hook.as_mut() {
+            h(what);
         }
     }
 
@@ -270,6 +294,7 @@ impl Kw1281Sim {
                 self.queue.push_back(b);
             }
             title::FAULT_CODES_DELETE => {
+                self.notify_write("clear");
                 self.faults.clear();
                 self.cleared = true;
                 let b = self.fault_block();
@@ -309,6 +334,7 @@ impl Kw1281Sim {
                 self.queue.push_back(reply);
             }
             title::ADAPTATION_TEST => {
+                self.notify_write("adaptation test");
                 let reply = match block.data.as_slice() {
                     [c, hi, lo] if self.adaptations.contains_key(c) => {
                         let v = u16::from_be_bytes([*hi, *lo]);
@@ -320,6 +346,7 @@ impl Kw1281Sim {
                 self.queue.push_back(reply);
             }
             title::ADAPTATION_SAVE => {
+                self.notify_write("adaptation save");
                 let reply = match block.data.as_slice() {
                     [c, hi, lo, w2, w1, w0]
                         if self.adaptations.contains_key(c) && !self.refuse_adaptation_save =>
@@ -355,6 +382,9 @@ impl Kw1281Sim {
         if self.echo {
             self.rx.push_back(b);
         }
+        if self.desynced {
+            return; // the module has given up on this exchange
+        }
         match self.phase {
             Phase::Idle | Phase::Ended => {
                 self.violate(format!("byte {b:#04X} while no session is open"));
@@ -377,6 +407,7 @@ impl Kw1281Sim {
                         self.violate(format!("bad complement {b:#04X}, expected {expected:#04X}"));
                         self.tx_pending.clear();
                         self.awaiting_ack = None;
+                        self.desynced = true;
                     }
                     return;
                 }
@@ -426,6 +457,7 @@ impl Transport for Kw1281Sim {
         self.tx_pending.clear();
         self.awaiting_ack = None;
         self.last_counter = 0;
+        self.desynced = false;
         self.phase = Phase::AwaitKeywordAck;
         self.rx.extend([0x55, self.keywords.0, self.keywords.1]);
         Ok(())

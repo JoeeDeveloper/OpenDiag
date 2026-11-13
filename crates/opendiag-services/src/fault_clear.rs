@@ -16,7 +16,7 @@
 use opendiag_core::{Error, Result};
 
 use crate::adaptation::WriteToken;
-use crate::backup::{BackupStatus, BackupStore};
+use crate::backup::{with_record_failure, BackupStatus, BackupStore};
 use crate::DtcReport;
 
 /// A module whose fault codes can be read and cleared.
@@ -102,58 +102,64 @@ pub fn apply_clear(
     )?;
     let id = snapshot.id;
 
-    // 4. Clear.
+    // 4. Clear. From here on the module may have changed, so a failure to update the
+    // record is reported with the real outcome, never instead of it.
     let token = WriteToken::new();
     if let Err(e) = access.clear(&token) {
-        store.set_status(
+        let update = store.set_status(
             &id,
             BackupStatus::SaveFailed,
             Some(format!("clear failed: {e}")),
-        )?;
-        return Err(protocol(format!(
-            "the module did not clear its codes: {e} (snapshot {id})"
+        );
+        return Err(protocol(with_record_failure(
+            format!("the module did not clear its codes: {e} (snapshot {id})"),
+            &id,
+            update,
         )));
     }
 
     // 5. Look again.
-    match access.read() {
-        Ok(remaining) if remaining.is_empty() => {
-            store.set_status(&id, BackupStatus::Verified, None)?;
-            Ok(ClearOutcome {
+    let (status, note, remaining_result) = match access.read() {
+        Ok(remaining) if remaining.is_empty() => (BackupStatus::Verified, None, Ok(remaining)),
+        Ok(remaining) => (
+            BackupStatus::VerificationFailed,
+            Some(format!(
+                "{} code(s) still reported after clearing: {}",
+                remaining.len(),
+                remaining
+                    .iter()
+                    .map(|d| d.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Ok(remaining),
+        ),
+        Err(e) => (
+            BackupStatus::VerificationFailed,
+            Some(format!("could not re-read after clearing: {e}")),
+            Err(e),
+        ),
+    };
+    let update = store.set_status(&id, status, note);
+    match remaining_result {
+        Ok(remaining) => match update {
+            Ok(_) => Ok(ClearOutcome {
                 backup_id: id,
                 cleared: shown.to_vec(),
                 remaining,
-            })
-        }
-        Ok(remaining) => {
-            store.set_status(
-                &id,
-                BackupStatus::VerificationFailed,
-                Some(format!(
-                    "{} code(s) still reported after clearing: {}",
-                    remaining.len(),
-                    remaining
-                        .iter()
-                        .map(|d| d.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-            )?;
-            Ok(ClearOutcome {
-                backup_id: id,
-                cleared: shown.to_vec(),
-                remaining,
-            })
-        }
-        Err(e) => {
-            store.set_status(
-                &id,
-                BackupStatus::VerificationFailed,
-                Some(format!("could not re-read after clearing: {e}")),
-            )?;
-            Err(protocol(format!(
+            }),
+            Err(e) => Err(protocol(format!(
+                "the codes WERE cleared ({} still reported afterwards), but snapshot {id} could not \
+                 be updated: {e}. It still says `planned`",
+                remaining.len()
+            ))),
+        },
+        Err(e) => Err(protocol(with_record_failure(
+            format!(
                 "cleared, but the codes could not be read back to verify it ({e}) (snapshot {id})"
-            )))
-        }
+            ),
+            &id,
+            update,
+        ))),
     }
 }

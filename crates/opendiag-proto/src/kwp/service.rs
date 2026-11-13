@@ -52,7 +52,7 @@ pub trait KwpService {
                 "identification option echo mismatch {r:02X?}"
             )));
         }
-        Ok(r[2..].to_vec())
+        Ok(r.get(2..).unwrap_or_default().to_vec())
     }
 
     /// ReadDataByLocalIdentifier (0x21): the data after the id echo.
@@ -61,7 +61,7 @@ pub trait KwpService {
         if r.get(1) != Some(&id) {
             return Err(protocol(format!("local id echo mismatch {r:02X?}")));
         }
-        Ok(r[2..].to_vec())
+        Ok(r.get(2..).unwrap_or_default().to_vec())
     }
 
     /// ReadDiagnosticTroubleCodesByStatus (0x18). `group` 0xFF00 means all groups.
@@ -69,7 +69,7 @@ pub trait KwpService {
         let [gh, gl] = group.to_be_bytes();
         let r = self.request(&[SID_READ_DTC_BY_STATUS, status, gh, gl])?;
         let count = usize::from(*r.get(1).ok_or_else(|| protocol("missing DTC count"))?);
-        let records = &r[2..];
+        let records = r.get(2..).unwrap_or_default();
         if records.len() != count * 3 {
             return Err(protocol(format!(
                 "DTC count {count} does not match {} data bytes",
@@ -78,9 +78,12 @@ pub trait KwpService {
         }
         Ok(records
             .chunks_exact(3)
-            .map(|c| KwpDtc {
-                code: u16::from_be_bytes([c[0], c[1]]),
-                status: c[2],
+            .filter_map(|c| match c {
+                [hi, lo, status] => Some(KwpDtc {
+                    code: u16::from_be_bytes([*hi, *lo]),
+                    status: *status,
+                }),
+                _ => None,
             })
             .collect())
     }
