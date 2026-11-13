@@ -2,5 +2,6 @@
 
 pub mod clock;
 pub mod isotp;
+pub mod kw1281;
 pub mod kwp;
 pub mod uds;

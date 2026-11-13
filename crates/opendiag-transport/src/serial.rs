@@ -3,7 +3,13 @@
 //! The wake-up pattern for ISO 14230 fast init is made by holding the TX line
 //! in break (low) for 25 ms, then high for 25 ms. K-line cables echo every
 //! transmitted byte back on RX; this driver passes the echo through and the
-//! protocol layer ignores it. 5-baud slow init is not implemented yet.
+//! protocol layer ignores it.
+//!
+//! 5-baud slow init (ISO 9141 / KW1281) is bit-banged the same way: the address
+//! goes out at 5 baud as 1 start bit, 7 data bits (LSB first), an odd parity
+//! bit and 1 stop bit, each held for 200 ms. The module then answers at the
+//! port's normal baud rate with a sync byte and keyword bytes, which the
+//! caller reads with `recv`.
 
 use std::io;
 use std::thread;
@@ -82,9 +88,27 @@ fn precise_sleep(d: Duration) {
     }
 }
 
+/// Duration of one bit at 5 baud.
+const SLOW_INIT_BIT: Duration = Duration::from_millis(200);
+
+/// The 10 line levels (`true` = high / idle) of a 5-baud address byte:
+/// start, 7 data bits LSB first, odd parity, stop.
+pub fn slow_init_bits(address: u8) -> [bool; 10] {
+    let data = address & 0x7F;
+    let mut bits = [false; 10];
+    for (i, bit) in bits[1..8].iter_mut().enumerate() {
+        *bit = (data >> i) & 1 == 1;
+    }
+    // Odd parity: the total number of ones in data + parity must be odd.
+    bits[8] = data.count_ones() % 2 == 0;
+    bits[9] = true;
+    bits
+}
+
 /// K-line transport over any [`SerialIo`].
 pub struct KLine<P: SerialIo> {
     port: P,
+    slow_init_bit: Duration,
 }
 
 /// K-line on a real serial port.
@@ -100,13 +124,27 @@ impl KLineSerial {
             .timeout(Duration::from_millis(100))
             .open()
             .map_err(|e| Error::Transport(format!("cannot open {path}: {e}")))?;
+        let mut port = port;
+        // Many K-line cables take their transceiver power from DTR and expect
+        // RTS low. Ports that lack these lines simply ignore the request.
+        let _ = port.write_data_terminal_ready(true);
+        let _ = port.write_request_to_send(false);
         Ok(Self::new(port))
     }
 }
 
 impl<P: SerialIo> KLine<P> {
     pub fn new(port: P) -> Self {
-        Self { port }
+        Self {
+            port,
+            slow_init_bit: SLOW_INIT_BIT,
+        }
+    }
+
+    /// Override the 5-baud bit time (tests only; real modules need 200 ms).
+    pub fn with_slow_init_bit_time(mut self, bit: Duration) -> Self {
+        self.slow_init_bit = bit;
+        self
     }
 
     pub fn port(&self) -> &P {
@@ -136,10 +174,20 @@ impl<P: SerialIo> Transport for KLine<P> {
         self.port.set_baud(baud).map_err(transport_err)
     }
 
-    fn slow_init(&mut self, _address: u8) -> Result<()> {
-        Err(Error::Transport(
-            "5-baud slow init is not implemented yet".into(),
-        ))
+    fn slow_init(&mut self, address: u8) -> Result<()> {
+        let mut line_high = true;
+        for bit in slow_init_bits(address) {
+            if bit != line_high {
+                self.port.set_break(!bit).map_err(transport_err)?;
+                line_high = bit;
+            }
+            precise_sleep(self.slow_init_bit);
+        }
+        if !line_high {
+            self.port.set_break(false).map_err(transport_err)?;
+        }
+        // Our own 5-baud pattern shows up on RX as junk bytes; drop it.
+        self.port.clear_input().map_err(transport_err)
     }
 
     fn fast_init(&mut self) -> Result<()> {
@@ -156,7 +204,7 @@ impl<P: SerialIo> Transport for KLine<P> {
             can: false,
             kline: true,
             set_baud: true,
-            slow_init: false,
+            slow_init: true,
             fast_init: true,
         }
     }
@@ -309,12 +357,56 @@ mod tests {
     }
 
     #[test]
-    fn baud_is_forwarded_and_slow_init_is_unsupported() {
+    fn baud_is_forwarded_and_capabilities_are_kline_only() {
         let mut k = KLine::new(MockPort::default());
         k.set_baud(10400).unwrap();
         assert_eq!(k.port().events[0].1, Event::Baud(10400));
-        assert!(k.slow_init(0x01).is_err());
         let caps = k.capabilities();
-        assert!(caps.kline && caps.fast_init && !caps.can && !caps.slow_init);
+        assert!(caps.kline && caps.fast_init && caps.slow_init && !caps.can);
+    }
+
+    #[test]
+    fn slow_init_bits_are_start_7_data_lsb_first_odd_parity_stop() {
+        // 0x01: one data bit set -> already odd -> parity bit 0.
+        assert_eq!(
+            slow_init_bits(0x01),
+            [false, true, false, false, false, false, false, false, false, true]
+        );
+        // 0x03: two ones -> parity bit 1 to make the count odd.
+        assert_eq!(
+            slow_init_bits(0x03),
+            [false, true, true, false, false, false, false, false, true, true]
+        );
+        // 0x7F: seven ones is odd -> parity bit 0.
+        assert_eq!(
+            slow_init_bits(0x7F),
+            [false, true, true, true, true, true, true, true, false, true]
+        );
+        // 0x17 (cluster address 23): 4 ones -> parity 1.
+        let b = slow_init_bits(0x17);
+        assert_eq!(b.iter().skip(1).take(8).filter(|x| **x).count() % 2, 1);
+    }
+
+    #[test]
+    fn slow_init_toggles_break_on_level_changes_and_flushes_input() {
+        let bit = Duration::from_millis(3);
+        let mut k = KLine::new(MockPort::default()).with_slow_init_bit_time(bit);
+        let start = Instant::now();
+        k.slow_init(0x01).unwrap();
+        let total = start.elapsed();
+
+        // bits (high=1): 0 1 0 0 0 0 0 0 0 1 -> break on, off, on, off.
+        let kinds: Vec<&Event> = k.port().events.iter().map(|(_, e)| e).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &Event::Break(true),
+                &Event::Break(false),
+                &Event::Break(true),
+                &Event::Break(false),
+                &Event::ClearInput
+            ]
+        );
+        assert!(total >= bit * 10, "10 bit times, got {total:?}");
     }
 }

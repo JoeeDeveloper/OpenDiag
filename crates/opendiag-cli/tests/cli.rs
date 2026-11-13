@@ -59,6 +59,16 @@ fn probe_reports_missing_port_and_rejects_bad_address() {
 }
 
 #[test]
+fn slow_init_probe_reports_missing_port() {
+    let (ok, _, err) = run(
+        &["probe", "--port", "NOPE-DOES-NOT-EXIST", "--slow-init"],
+        "",
+    );
+    assert!(!ok);
+    assert!(err.contains("cannot open"), "{err}");
+}
+
+#[test]
 fn hardware_mode_is_refused_for_now() {
     let (ok, _, err) = run(&["scan"], "");
     assert!(!ok);

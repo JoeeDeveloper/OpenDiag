@@ -2,6 +2,8 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use opendiag_proto::clock::SystemClock;
+use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig};
 use opendiag_services::demo::{virtual_uds_client, VirtualClient, TESTER_ID};
 use opendiag_services::{clear_dtcs, identify, read_dtcs, ClearConfirmation, DtcReport};
@@ -37,6 +39,13 @@ enum Cmd {
         /// Serial baud rate.
         #[arg(long, default_value_t = 10400)]
         baud: u32,
+        /// Use 5-baud slow init and the KW1281 protocol (older modules, ~2 s to start).
+        /// Reads identification and fault codes only; nothing is written or cleared.
+        #[arg(long)]
+        slow_init: bool,
+        /// With --slow-init: the cable does not echo transmitted bytes.
+        #[arg(long)]
+        no_echo: bool,
     },
 }
 
@@ -88,7 +97,15 @@ fn main() -> ExitCode {
             port,
             address,
             baud,
-        }) => probe(&port, address, baud),
+            slow_init,
+            no_echo,
+        }) => {
+            if slow_init {
+                probe_kw1281(&port, address, baud, !no_echo)
+            } else {
+                probe(&port, address, baud)
+            }
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -111,6 +128,35 @@ fn ports() -> Result<(), String> {
 }
 
 /// Read-only handshake with one module over a K-line cable.
+/// Read-only KW1281 session: 5-baud init, identification, fault codes, then end.
+fn probe_kw1281(port: &str, address: u8, baud: u32, echo: bool) -> Result<(), String> {
+    let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
+    let cfg = Kw1281Config {
+        echo,
+        ..Kw1281Config::default()
+    };
+    let mut kw = Kw1281Client::new(transport, SystemClock::new(), cfg);
+    println!("5-baud slow init to module {address:#04X} on {port} at {baud} baud (about 2 s)...");
+    let info = kw.connect(address).map_err(|e| e.to_string())?;
+    println!(
+        "Connected, keyword {:#04X} {:#04X}",
+        info.key_bytes.kb1, info.key_bytes.kb2
+    );
+    for line in &info.ident {
+        println!("  ident: {}", line.trim_end());
+    }
+    let faults = kw.read_fault_codes().map_err(|e| e.to_string())?;
+    if faults.is_empty() {
+        println!("No fault codes stored.");
+    }
+    for f in &faults {
+        println!("  fault {} (status {:#04X})", f.text(), f.status);
+    }
+    // Best effort: the module times the session out by itself anyway.
+    let _ = kw.end();
+    Ok(())
+}
+
 fn probe(port: &str, address: u8, baud: u32) -> Result<(), String> {
     let transport = KLineSerial::open(port, baud).map_err(|e| e.to_string())?;
     let mut kwp = KwpClient::new(transport, KwpConfig::new(address));
