@@ -12,6 +12,7 @@ name = "opendiag"
 path = "src/main.rs"
 
 [dependencies]
+opendiag-services = { path = "../opendiag-services" }
 clap = { version = "4", features = ["derive"] }
 
 [lints]

@@ -7,5 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
+[dependencies]
+opendiag-core = { path = "../opendiag-core" }
+opendiag-proto = { path = "../opendiag-proto" }
+opendiag-transport = { path = "../opendiag-transport" }
+
 [lints]
 workspace = true

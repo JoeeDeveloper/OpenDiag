@@ -121,6 +121,7 @@ name = "opendiag-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "opendiag-services",
 ]
 
 [[package]]
@@ -142,6 +143,11 @@ dependencies = [
 [[package]]
 name = "opendiag-services"
 version = "0.0.1"
+dependencies = [
+ "opendiag-core",
+ "opendiag-proto",
+ "opendiag-transport",
+]
 
 [[package]]
 name = "opendiag-transport"
