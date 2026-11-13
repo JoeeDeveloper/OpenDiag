@@ -22,6 +22,7 @@ pub struct Simulator {
     sent: Vec<Frame>,
     baud: Option<u32>,
     slow_inits: Vec<u8>,
+    fast_inits: usize,
 }
 
 impl Simulator {
@@ -49,6 +50,11 @@ impl Simulator {
     pub fn slow_inits(&self) -> &[u8] {
         &self.slow_inits
     }
+
+    /// How many times fast init was requested.
+    pub fn fast_inits(&self) -> usize {
+        self.fast_inits
+    }
 }
 
 impl Transport for Simulator {
@@ -74,12 +80,18 @@ impl Transport for Simulator {
         Ok(())
     }
 
+    fn fast_init(&mut self) -> Result<()> {
+        self.fast_inits += 1;
+        Ok(())
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             can: true,
             kline: true,
             set_baud: true,
             slow_init: true,
+            fast_init: true,
         }
     }
 }

@@ -42,6 +42,7 @@ pub struct Capabilities {
     pub kline: bool,
     pub set_baud: bool,
     pub slow_init: bool,
+    pub fast_init: bool,
 }
 
 /// Hardware abstraction. Protocol code depends only on this trait.
@@ -55,5 +56,12 @@ pub trait Transport {
     fn set_baud(&mut self, baud: u32) -> Result<()>;
     /// ISO 9141 5-baud initialisation addressed to `address`.
     fn slow_init(&mut self, address: u8) -> Result<()>;
+    /// ISO 14230 fast init wake-up pattern (25 ms low, 25 ms high). The caller
+    /// sends StartCommunication afterwards. Unsupported by default.
+    fn fast_init(&mut self) -> Result<()> {
+        Err(opendiag_core::Error::Transport(
+            "fast init not supported by this transport".into(),
+        ))
+    }
     fn capabilities(&self) -> Capabilities;
 }
