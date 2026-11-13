@@ -198,6 +198,242 @@ fn log_refuses_modules_without_live_data_and_bad_input() {
     );
 }
 
+#[test]
+fn adaptation_read_shows_the_value_and_unknown_channels_are_refused() {
+    let (ok, out, err) = run(
+        &["adaptation", "read", "--simulate-kw1281", "--channel", "4"],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("Channel 4: 100"), "{out}");
+    let (ok, _, err) = run(
+        &["adaptation", "read", "--simulate-kw1281", "--channel", "99"],
+        "",
+    );
+    assert!(!ok && err.contains("NAK"), "{err}");
+    let (ok, _, err) = run(&["adaptation", "read", "--simulate", "--channel", "4"], "");
+    assert!(!ok && err.contains("only available for KW1281"), "{err}");
+}
+
+#[test]
+fn adaptation_set_backs_up_confirms_verifies_and_lists() {
+    let store = temp_file("set.jsonl");
+    let _ = std::fs::remove_file(&store);
+    let s = store.to_str().unwrap();
+    let args = [
+        "adaptation",
+        "set",
+        "--simulate-kw1281",
+        "--channel",
+        "4",
+        "--value",
+        "200",
+        "--workshop-code",
+        "12345",
+        "--backup-file",
+        s,
+    ];
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("Adaptation channel 4: 100 -> 200"), "{out}");
+    assert!(out.contains("WRITES to the module"), "{out}");
+    assert!(
+        out.contains("Done and verified") && out.contains("b0001"),
+        "{out}"
+    );
+
+    let (ok, out, err) = run(&["backup", "list", "--backup-file", s], "");
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("b0001") && out.contains("channel 4: 100 -> 200") && out.contains("Verified"),
+        "{out}"
+    );
+    std::fs::remove_file(&store).unwrap();
+}
+
+#[test]
+fn adaptation_set_without_confirmation_changes_nothing_and_writes_no_backup() {
+    let store = temp_file("cancel.jsonl");
+    let _ = std::fs::remove_file(&store);
+    let args = [
+        "adaptation",
+        "set",
+        "--simulate-kw1281",
+        "--channel",
+        "4",
+        "--value",
+        "200",
+        "--workshop-code",
+        "0",
+        "--backup-file",
+        store.to_str().unwrap(),
+    ];
+    for answer in ["no\n", "\n", "yes\n", ""] {
+        let (ok, out, _) = run(&args, answer);
+        assert!(ok);
+        assert!(out.contains("Cancelled"), "{answer:?}: {out}");
+        assert!(
+            !store.exists(),
+            "a cancelled change must not create a backup ({answer:?})"
+        );
+    }
+}
+
+#[test]
+fn adaptation_set_has_no_yes_flag_and_validates_the_workshop_code() {
+    let base = [
+        "adaptation",
+        "set",
+        "--simulate-kw1281",
+        "--channel",
+        "4",
+        "--value",
+        "200",
+    ];
+    let (ok, _, err) = run(
+        &[&base[..], &["--workshop-code", "0", "--yes"]].concat(),
+        "",
+    );
+    assert!(!ok && err.contains("--yes"), "no bypass flag: {err}");
+    let (ok, _, err) = run(&base, "");
+    assert!(!ok && err.contains("--workshop-code"), "required: {err}");
+    let (ok, _, err) = run(&[&base[..], &["--workshop-code", "16777216"]].concat(), "");
+    assert!(!ok && err.contains("not in 0..=16777215"), "{err}");
+    let (ok, _, err) = run(&[&base[..], &["--workshop-code", "x"]].concat(), "");
+    assert!(!ok && err.contains("invalid value"), "{err}");
+}
+
+#[test]
+fn setting_the_value_it_already_has_is_a_no_op() {
+    let store = temp_file("noop.jsonl");
+    let _ = std::fs::remove_file(&store);
+    let (ok, out, err) = run(
+        &[
+            "adaptation",
+            "set",
+            "--simulate-kw1281",
+            "--channel",
+            "4",
+            "--value",
+            "100",
+            "--workshop-code",
+            "0",
+            "--backup-file",
+            store.to_str().unwrap(),
+        ],
+        "YES\n",
+    );
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("nothing to change") && !store.exists(),
+        "{out}"
+    );
+}
+
+#[test]
+fn backup_restore_puts_a_value_back_and_records_the_restore() {
+    use opendiag_services::backup::NewBackup;
+    let path = temp_file("restore.jsonl");
+    let _ = std::fs::remove_file(&path);
+    // A past change on module 0x01, channel 4: 50 -> 100 (the virtual module now holds 100).
+    let store = opendiag_services::BackupStore::new(&path);
+    store
+        .plan(NewBackup {
+            protocol: "kw1281".into(),
+            module_address: 1,
+            kind: "adaptation".into(),
+            channel: 4,
+            old_value: 50,
+            new_value: 100,
+            restores: None,
+        })
+        .unwrap();
+    let s = path.to_str().unwrap();
+    let args = [
+        "backup",
+        "restore",
+        "b0001",
+        "--simulate-kw1281",
+        "--workshop-code",
+        "0",
+        "--backup-file",
+        s,
+    ];
+
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(
+        ok && out.contains("currently 100, will be set back to 50") && out.contains("Cancelled"),
+        "{out}"
+    );
+    assert_eq!(
+        store.records().unwrap().len(),
+        1,
+        "cancelling records nothing"
+    );
+
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("Restored and verified") && out.contains("b0002"),
+        "{out}"
+    );
+    let (_, listing, _) = run(&["backup", "list", "--backup-file", s], "");
+    assert!(
+        listing.contains("Restored") && listing.contains("(restores b0001)"),
+        "{listing}"
+    );
+    std::fs::remove_file(&path).unwrap();
+
+    let (ok, out, _) = run(&["backup", "list", "--backup-file", s], "");
+    assert!(ok && out.contains("No backups"), "{out}");
+    let (ok, _, err) = run(
+        &[
+            "backup",
+            "restore",
+            "b0001",
+            "--simulate-kw1281",
+            "--workshop-code",
+            "0",
+            "--backup-file",
+            s,
+        ],
+        "YES\n",
+    );
+    assert!(!ok && err.contains("no backup record"), "{err}");
+}
+
+#[test]
+fn unix_times_in_the_backup_list_are_formatted_as_utc_dates() {
+    use opendiag_services::backup::NewBackup;
+    // Write a record with a known timestamp by hand.
+    let path = temp_file("dates.jsonl");
+    let _ = std::fs::remove_file(&path);
+    let store = opendiag_services::BackupStore::new(&path);
+    let rec = store
+        .plan(NewBackup {
+            protocol: "kw1281".into(),
+            module_address: 1,
+            kind: "adaptation".into(),
+            channel: 4,
+            old_value: 1,
+            new_value: 2,
+            restores: None,
+        })
+        .unwrap();
+    // 2026-11-13 17:06:23 UTC = 1_794_589_583
+    let line = std::fs::read_to_string(&path).unwrap().replace(
+        &format!("\"created_unix\":{}", rec.created_unix),
+        "\"created_unix\":1794589583",
+    );
+    std::fs::write(&path, line).unwrap();
+    let (ok, out, _) = run(
+        &["backup", "list", "--backup-file", path.to_str().unwrap()],
+        "",
+    );
+    std::fs::remove_file(&path).unwrap();
+    assert!(ok && out.contains("2026-11-13 17:06:23 UTC"), "{out}");
+}
+
 fn temp_file(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("opendiag-cli-{}-{name}", std::process::id()))
 }

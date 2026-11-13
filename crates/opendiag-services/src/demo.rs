@@ -27,6 +27,9 @@ pub fn virtual_kw1281_bus() -> Kw1281Sim {
             ],
         )
         .group(2, &[(0x05, 0x00, 0x80)])
+        // Made-up adaptation channels.
+        .adaptation(4, 100)
+        .adaptation(7, 5)
 }
 
 /// The virtual KW1281 module with its session already open.

@@ -5,12 +5,13 @@ use opendiag_proto::clock::Clock;
 use opendiag_proto::kw1281::{Fault, Kw1281Client, RawMeasurement};
 use opendiag_transport::Transport;
 
-use crate::{ClearConfirmation, DtcReport, Ident, LiveData, Module};
+use crate::{AdaptationAccess, ClearConfirmation, DtcReport, Ident, LiveData, Module, WriteToken};
 
 /// A KW1281 module with an open session. The session is ended when this is dropped.
 pub struct Kw1281Module<T: Transport, C: Clock> {
     client: Kw1281Client<T, C>,
     ident: Vec<String>,
+    address: u8,
 }
 
 impl<T: Transport, C: Clock> Kw1281Module<T, C> {
@@ -20,11 +21,24 @@ impl<T: Transport, C: Clock> Kw1281Module<T, C> {
         Ok(Self {
             client,
             ident: info.ident,
+            address,
         })
     }
 
     pub fn client(&self) -> &Kw1281Client<T, C> {
         &self.client
+    }
+
+    /// Run `f` with writes unlocked, always restoring the previous mode.
+    fn with_unlocked<R>(
+        &mut self,
+        f: impl FnOnce(&mut Kw1281Client<T, C>) -> Result<R>,
+    ) -> Result<R> {
+        let previous = self.client.write_mode();
+        self.client.set_write_mode(WriteMode::Unlocked);
+        let result = f(&mut self.client);
+        self.client.set_write_mode(previous);
+        result
     }
 }
 
@@ -55,15 +69,15 @@ impl<T: Transport, C: Clock> Module for Kw1281Module<T, C> {
 
     fn clear_dtcs(&mut self, _confirmation: &ClearConfirmation) -> Result<Vec<DtcReport>> {
         let before = self.read_dtcs()?;
-        let previous = self.client.write_mode();
-        self.client.set_write_mode(WriteMode::Unlocked);
-        let result = self.client.clear_fault_codes();
-        self.client.set_write_mode(previous);
-        result?;
+        self.with_unlocked(|c| c.clear_fault_codes())?;
         Ok(before)
     }
 
     fn live(&mut self) -> Option<&mut dyn LiveData> {
+        Some(self)
+    }
+
+    fn adaptation(&mut self) -> Option<&mut dyn AdaptationAccess> {
         Some(self)
     }
 }
@@ -71,6 +85,34 @@ impl<T: Transport, C: Clock> Module for Kw1281Module<T, C> {
 impl<T: Transport, C: Clock> LiveData for Kw1281Module<T, C> {
     fn read_group(&mut self, group: u8) -> Result<Vec<RawMeasurement>> {
         self.client.read_group(group)
+    }
+}
+
+impl<T: Transport, C: Clock> AdaptationAccess for Kw1281Module<T, C> {
+    fn protocol(&self) -> &'static str {
+        "kw1281"
+    }
+
+    fn module_address(&self) -> u8 {
+        self.address
+    }
+
+    fn read(&mut self, channel: u8) -> Result<u16> {
+        self.client.adaptation_read(channel)
+    }
+
+    fn test(&mut self, _token: &WriteToken, channel: u8, value: u16) -> Result<u16> {
+        self.with_unlocked(|c| c.adaptation_test(channel, value))
+    }
+
+    fn save(
+        &mut self,
+        _token: &WriteToken,
+        channel: u8,
+        value: u16,
+        workshop_code: u32,
+    ) -> Result<()> {
+        self.with_unlocked(|c| c.adaptation_save(channel, value, workshop_code))
     }
 }
 

@@ -13,6 +13,10 @@ pub mod title {
     pub const FAULT_CODES_READ: u8 = 0x07;
     pub const ACK: u8 = 0x09;
     pub const NAK: u8 = 0x0A;
+    pub const ADAPTATION_READ: u8 = 0x21;
+    pub const ADAPTATION_TEST: u8 = 0x22;
+    pub const ADAPTATION_SAVE: u8 = 0x2A;
+    pub const ADAPTATION_RESPONSE: u8 = 0xE6;
     pub const GROUP_READ: u8 = 0x29;
     pub const GROUP_READ_RESPONSE: u8 = 0xE7;
     pub const ASCII_DATA: u8 = 0xF6;

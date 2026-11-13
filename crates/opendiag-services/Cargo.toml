@@ -11,6 +11,8 @@ repository.workspace = true
 opendiag-core = { path = "../opendiag-core" }
 opendiag-proto = { path = "../opendiag-proto" }
 opendiag-transport = { path = "../opendiag-transport" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [lints]
 workspace = true

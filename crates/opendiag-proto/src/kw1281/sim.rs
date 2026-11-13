@@ -24,6 +24,23 @@ enum Phase {
     Ended,
 }
 
+fn nak() -> Block {
+    Block {
+        counter: 0,
+        title: title::NAK,
+        data: Vec::new(),
+    }
+}
+
+fn adaptation_block(channel: u8, value: u16) -> Block {
+    let [hi, lo] = value.to_be_bytes();
+    Block {
+        counter: 0,
+        title: title::ADAPTATION_RESPONSE,
+        data: vec![channel, hi, lo],
+    }
+}
+
 pub struct Kw1281Sim {
     echo: bool,
     keywords: (u8, u8),
@@ -31,6 +48,11 @@ pub struct Kw1281Sim {
     faults: Vec<(u16, u8)>,
     groups: HashMap<u8, Vec<Vec<u8>>>,
     group_reads: HashMap<u8, usize>,
+    adaptations: HashMap<u8, u16>,
+    refuse_adaptation_save: bool,
+    ignore_adaptation_save: bool,
+    adaptation_tests: Vec<(u8, u16)>,
+    adaptation_saves: Vec<(u8, u16, u32)>,
 
     phase: Phase,
     rx: VecDeque<u8>,
@@ -61,6 +83,11 @@ impl Kw1281Sim {
             faults: Vec::new(),
             groups: HashMap::new(),
             group_reads: HashMap::new(),
+            adaptations: HashMap::new(),
+            refuse_adaptation_save: false,
+            ignore_adaptation_save: false,
+            adaptation_tests: Vec::new(),
+            adaptation_saves: Vec::new(),
             phase: Phase::Idle,
             rx: VecDeque::new(),
             tx_pending: VecDeque::new(),
@@ -110,6 +137,40 @@ impl Kw1281Sim {
             .collect();
         self.groups.insert(group, frames);
         self
+    }
+
+    /// Add an adaptation channel with a current value.
+    pub fn adaptation(mut self, channel: u8, value: u16) -> Self {
+        self.adaptations.insert(channel, value);
+        self
+    }
+
+    /// Answer every adaptation save with NAK (the module refuses to store).
+    pub fn refuse_adaptation_save(mut self) -> Self {
+        self.refuse_adaptation_save = true;
+        self
+    }
+
+    /// Acknowledge adaptation saves but silently keep the old value, like a
+    /// module that failed to store. Read-back verification must catch this.
+    pub fn ignore_adaptation_save(mut self) -> Self {
+        self.ignore_adaptation_save = true;
+        self
+    }
+
+    /// Current value of an adaptation channel.
+    pub fn adaptation_value(&self, channel: u8) -> Option<u16> {
+        self.adaptations.get(&channel).copied()
+    }
+
+    /// Every adaptation test the tester sent: `(channel, value)`.
+    pub fn adaptation_tests(&self) -> &[(u8, u16)] {
+        &self.adaptation_tests
+    }
+
+    /// Every adaptation save the tester sent: `(channel, value, workshop code)`.
+    pub fn adaptation_saves(&self) -> &[(u8, u16, u32)] {
+        &self.adaptation_saves
     }
 
     /// Addresses the tester sent 5-baud init to.
@@ -233,6 +294,46 @@ impl Kw1281Sim {
                         title: title::NAK,
                         data: Vec::new(),
                     }
+                };
+                self.queue.push_back(reply);
+            }
+            title::ADAPTATION_READ => {
+                let reply = match block
+                    .data
+                    .first()
+                    .and_then(|c| self.adaptations.get(c).map(|v| (*c, *v)))
+                {
+                    Some((c, v)) => adaptation_block(c, v),
+                    None => nak(),
+                };
+                self.queue.push_back(reply);
+            }
+            title::ADAPTATION_TEST => {
+                let reply = match block.data.as_slice() {
+                    [c, hi, lo] if self.adaptations.contains_key(c) => {
+                        let v = u16::from_be_bytes([*hi, *lo]);
+                        self.adaptation_tests.push((*c, v));
+                        adaptation_block(*c, v)
+                    }
+                    _ => nak(),
+                };
+                self.queue.push_back(reply);
+            }
+            title::ADAPTATION_SAVE => {
+                let reply = match block.data.as_slice() {
+                    [c, hi, lo, w2, w1, w0]
+                        if self.adaptations.contains_key(c) && !self.refuse_adaptation_save =>
+                    {
+                        let v = u16::from_be_bytes([*hi, *lo]);
+                        let wc = u32::from_be_bytes([0, *w2, *w1, *w0]);
+                        self.adaptation_saves.push((*c, v, wc));
+                        if !self.ignore_adaptation_save {
+                            self.adaptations.insert(*c, v);
+                        }
+                        let stored = self.adaptations.get(c).copied().unwrap_or(v);
+                        adaptation_block(*c, stored)
+                    }
+                    _ => nak(),
                 };
                 self.queue.push_back(reply);
             }

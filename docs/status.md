@@ -29,10 +29,13 @@ Last reviewed 2026-11-13. This is deliberately blunt.
 
 ## Known weaknesses
 
-- **Write safety is convention, not enforcement.** `WriteMode` can be flipped by any caller and
-  `ClearConfirmation::confirmed_by_user()` is public. Today only "clear fault codes" is wired as a write, and
-  only the CLI constructs the confirmation, after a typed `YES` (or `--yes`). There is **no backup/restore
-  mechanism yet**, which must exist before coding or adaptation writes are added.
+- **Write safety is enforced for adaptation changes, still convention for clearing codes.** Adaptation writes
+  go through a guarded flow (confirmation bound to the exact diff, durable backup before sending, read-back
+  verification, restore command) and cannot be called around it ([safety.md](safety.md)). `dtc clear` is still
+  lighter: `WriteMode` can be flipped by any caller and `ClearConfirmation::confirmed_by_user()` is public.
+  Short/long coding is not implemented, so nothing else writes.
+- **The adaptation save reply format is unconfirmed**, so success is decided by reading the value back. Nothing
+  about adaptation has run against a real module.
 - **Capture/trace tooling is new and itself unverified on hardware.** `--trace` and `opendiag capture` exist
   ([capture.md](capture.md)) but have only run against simulators; the serial and CAN capture paths have never
   heard a real bus. The only committed trace fixture is synthetic.

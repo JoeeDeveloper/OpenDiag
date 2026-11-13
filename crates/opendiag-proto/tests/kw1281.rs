@@ -166,6 +166,82 @@ fn block_counters_stay_in_step_across_wraparound() {
     );
 }
 
+fn adaptation_client(sim: Kw1281Sim) -> Kw1281Client<Kw1281Sim, FakeClock> {
+    let mut c = client(sim);
+    c.connect(0x01).unwrap();
+    c
+}
+
+#[test]
+fn adaptation_read_is_read_only_and_returns_the_value() {
+    let mut c = adaptation_client(demo_sim().adaptation(4, 0x1234));
+    assert_eq!(c.write_mode(), WriteMode::ReadOnly);
+    assert_eq!(c.adaptation_read(4).unwrap(), 0x1234);
+    let err = c.adaptation_read(5).unwrap_err().to_string();
+    assert!(err.contains("NAK"), "unknown channel is refused: {err}");
+    assert!(c.transport().violations().is_empty());
+}
+
+#[test]
+fn adaptation_test_and_save_are_gated_and_send_nothing_when_locked() {
+    let mut c = adaptation_client(demo_sim().adaptation(4, 100));
+    let before = c.transport().bytes_received();
+    assert!(matches!(
+        c.adaptation_test(4, 200),
+        Err(Error::WritesLocked(_))
+    ));
+    assert!(matches!(
+        c.adaptation_save(4, 200, 0),
+        Err(Error::WritesLocked(_))
+    ));
+    assert_eq!(
+        c.transport().bytes_received(),
+        before,
+        "nothing hit the bus"
+    );
+    assert_eq!(c.transport().adaptation_value(4), Some(100));
+}
+
+#[test]
+fn adaptation_test_does_not_store_but_save_does() {
+    let mut c = adaptation_client(demo_sim().adaptation(4, 100));
+    c.set_write_mode(WriteMode::Unlocked);
+    assert_eq!(c.adaptation_test(4, 200).unwrap(), 200);
+    assert_eq!(
+        c.transport().adaptation_value(4),
+        Some(100),
+        "test stores nothing"
+    );
+    c.adaptation_save(4, 200, 0x01_23_45).unwrap();
+    assert_eq!(c.transport().adaptation_value(4), Some(200));
+    assert_eq!(c.transport().adaptation_saves(), &[(4, 200, 0x01_23_45)]);
+    assert_eq!(c.adaptation_read(4).unwrap(), 200);
+    assert!(c.transport().violations().is_empty());
+}
+
+#[test]
+fn adaptation_save_rejects_oversized_workshop_codes_and_refusals() {
+    let mut c = adaptation_client(demo_sim().adaptation(4, 100));
+    c.set_write_mode(WriteMode::Unlocked);
+    let err = c
+        .adaptation_save(4, 1, 0x0100_0000)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("24 bits"), "{err}");
+    assert!(
+        c.transport().adaptation_saves().is_empty(),
+        "nothing was sent"
+    );
+
+    let mut c = adaptation_client(demo_sim().adaptation(4, 100).refuse_adaptation_save());
+    c.set_write_mode(WriteMode::Unlocked);
+    assert!(c
+        .adaptation_save(4, 1, 0)
+        .unwrap_err()
+        .to_string()
+        .contains("NAK"));
+}
+
 #[test]
 fn end_closes_the_session() {
     let mut c = client(demo_sim());

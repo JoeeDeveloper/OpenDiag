@@ -319,6 +319,77 @@ impl<T: Transport, C: Clock> Kw1281Client<T, C> {
         Self::fault_blocks(blocks)
     }
 
+    /// Extract the value from a single adaptation response block
+    /// (`channel, value hi, value lo`) for `channel`.
+    fn adaptation_value(blocks: &[Block], channel: u8) -> Result<u16> {
+        let [block] = blocks else {
+            return Err(protocol(format!(
+                "expected one adaptation response block, got {}",
+                blocks.len()
+            )));
+        };
+        if block.title != title::ADAPTATION_RESPONSE {
+            return Err(protocol(format!(
+                "unexpected block {:#04X} in adaptation response",
+                block.title
+            )));
+        }
+        let [ch, hi, lo] = block.data.as_slice() else {
+            return Err(protocol("adaptation response must carry 3 data bytes"));
+        };
+        if *ch != channel {
+            return Err(protocol(format!(
+                "adaptation response is for channel {ch}, not {channel}"
+            )));
+        }
+        Ok(u16::from_be_bytes([*hi, *lo]))
+    }
+
+    /// Read an adaptation channel's current value. Read-only.
+    pub fn adaptation_read(&mut self, channel: u8) -> Result<u16> {
+        let blocks = self.request(title::ADAPTATION_READ, &[channel])?;
+        Self::adaptation_value(&blocks, channel)
+    }
+
+    /// Adaptation "test": the module reports how it would use `value` without
+    /// storing it. Still sends data to the module, so it needs unlocked writes.
+    pub fn adaptation_test(&mut self, channel: u8, value: u16) -> Result<u16> {
+        self.require_unlocked("adaptation test")?;
+        let [hi, lo] = value.to_be_bytes();
+        let blocks = self.request(title::ADAPTATION_TEST, &[channel, hi, lo])?;
+        Self::adaptation_value(&blocks, channel)
+    }
+
+    /// Store `value` in an adaptation channel. Requires unlocked writes and a
+    /// 24-bit workshop code (module-specific; supplied by the user).
+    ///
+    /// The reply format is not confirmed, so any non-NAK answer (a response block
+    /// for this channel, or a bare ACK) counts as accepted. Callers must read the
+    /// value back to know whether it was stored.
+    pub fn adaptation_save(&mut self, channel: u8, value: u16, workshop_code: u32) -> Result<()> {
+        self.require_unlocked("adaptation save")?;
+        if workshop_code > 0x00FF_FFFF {
+            return Err(protocol(
+                "workshop code must fit in 24 bits (0 to 16777215)",
+            ));
+        }
+        let [hi, lo] = value.to_be_bytes();
+        let [_, w2, w1, w0] = workshop_code.to_be_bytes();
+        let blocks = self.request(title::ADAPTATION_SAVE, &[channel, hi, lo, w2, w1, w0])?;
+        for b in &blocks {
+            if b.title != title::ADAPTATION_RESPONSE {
+                return Err(protocol(format!(
+                    "unexpected block {:#04X} after adaptation save",
+                    b.title
+                )));
+            }
+            if b.data.first() != Some(&channel) {
+                return Err(protocol("adaptation save answered for a different channel"));
+            }
+        }
+        Ok(())
+    }
+
     /// Read a measuring-block group as raw `(formula, a, b)` cells.
     pub fn read_group(&mut self, group: u8) -> Result<Vec<RawMeasurement>> {
         let blocks = self.request(title::GROUP_READ, &[group])?;

@@ -14,7 +14,8 @@ use opendiag_services::demo::{
     TESTER_ID,
 };
 use opendiag_services::{
-    log_csv, ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module,
+    apply_change, apply_restore, log_csv, plan_change, plan_restore, BackupStore,
+    ClearConfirmation, DtcReport, Kw1281Module, Limit, LogConfig, Module, WriteConfirmation,
 };
 use opendiag_transport::{
     list_serial_ports, open_can, KLineSerial, TraceStatus, Tracing, Transport,
@@ -36,6 +37,16 @@ enum Cmd {
     Dtc {
         #[command(subcommand)]
         action: DtcCmd,
+    },
+    /// Read or change adaptation channels (KW1281 modules). Changes are backed up first.
+    Adaptation {
+        #[command(subcommand)]
+        action: AdaptationCmd,
+    },
+    /// List or restore backups of changes made to modules.
+    Backup {
+        #[command(subcommand)]
+        action: BackupCmd,
     },
     /// Work with the open data files (module names, DTC descriptions, labels).
     Data {
@@ -113,6 +124,65 @@ fn parse_hex_u8(s: &str) -> Result<u8, String> {
     u8::from_str_radix(digits, 16).map_err(|_| format!("`{s}` is not a hex byte (e.g. 0x01)"))
 }
 
+/// The 24-bit workshop code a module expects with a write (module-specific; you supply it).
+fn workshop_code_parser() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(0..=16_777_215)
+}
+
+#[derive(Args)]
+struct StoreArg {
+    /// Backup file. Default: $OPENDIAG_BACKUPS, else ./opendiag-backups.jsonl.
+    #[arg(long)]
+    backup_file: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum AdaptationCmd {
+    /// Read the current value of a channel (read-only).
+    Read {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        channel: u8,
+    },
+    /// Change a channel. WRITES to the module: saves the old value first, asks you to
+    /// confirm, then reads the new value back to verify it. There is no --yes.
+    Set {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        channel: u8,
+        #[arg(long)]
+        value: u16,
+        /// 24-bit workshop code the module expects (0 to 16777215).
+        #[arg(long, value_parser = workshop_code_parser())]
+        workshop_code: u32,
+        #[command(flatten)]
+        store: StoreArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupCmd {
+    /// List recorded changes and their status.
+    List {
+        #[command(flatten)]
+        store: StoreArg,
+    },
+    /// Put a backed-up value back. WRITES to the module (and is itself backed up).
+    Restore {
+        /// Backup id from `backup list`, e.g. b0003.
+        id: String,
+        #[command(flatten)]
+        target: Target,
+        /// 24-bit workshop code the module expects (0 to 16777215).
+        #[arg(long, value_parser = workshop_code_parser())]
+        workshop_code: u32,
+        #[command(flatten)]
+        store: StoreArg,
+    },
+}
+
 #[derive(Subcommand)]
 enum DataCmd {
     /// Check every data file under a directory (default: ./data).
@@ -180,6 +250,31 @@ fn main() -> ExitCode {
         Some(Cmd::Dtc {
             action: DtcCmd::Clear { target, yes },
         }) => dtc_clear(&target, yes),
+        Some(Cmd::Adaptation {
+            action: AdaptationCmd::Read { target, channel },
+        }) => adaptation_read(&target, channel),
+        Some(Cmd::Adaptation {
+            action:
+                AdaptationCmd::Set {
+                    target,
+                    channel,
+                    value,
+                    workshop_code,
+                    store,
+                },
+        }) => adaptation_set(&target, channel, value, workshop_code, &store),
+        Some(Cmd::Backup {
+            action: BackupCmd::List { store },
+        }) => backup_list(&store),
+        Some(Cmd::Backup {
+            action:
+                BackupCmd::Restore {
+                    id,
+                    target,
+                    workshop_code,
+                    store,
+                },
+        }) => backup_restore(&id, &target, workshop_code, &store),
         Some(Cmd::Data {
             action: DataCmd::Validate { path },
         }) => data_validate(path.as_deref().unwrap_or_else(|| Path::new("data"))),
@@ -466,6 +561,171 @@ fn scan(target: &Target) -> Result<(), String> {
     for line in ident.lines.iter().skip(1) {
         println!("Ident            : {line}");
     }
+    Ok(())
+}
+
+fn backup_store(arg: &StoreArg) -> BackupStore {
+    let path = arg
+        .backup_file
+        .clone()
+        .or_else(|| std::env::var_os("OPENDIAG_BACKUPS").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("opendiag-backups.jsonl"));
+    BackupStore::new(path)
+}
+
+const NO_ADAPTATION: &str =
+    "adaptation channels are only available for KW1281 modules so far (use --simulate-kw1281 or --slow-init)";
+
+fn adaptation_read(target: &Target, channel: u8) -> Result<(), String> {
+    let mut conn = connect(target)?;
+    let access = conn.module.adaptation().ok_or(NO_ADAPTATION)?;
+    let value = access.read(channel).map_err(|e| e.to_string())?;
+    println!("Channel {channel}: {value}");
+    Ok(())
+}
+
+fn print_write_warning(store: &BackupStore) {
+    println!(
+        "This WRITES to the module. The old value is saved to {} first, and the new value is read back to verify it.",
+        store.path().display()
+    );
+    println!("Only continue with the vehicle stationary, ignition on, and a healthy battery.");
+}
+
+fn adaptation_set(
+    target: &Target,
+    channel: u8,
+    value: u16,
+    workshop_code: u32,
+    store: &StoreArg,
+) -> Result<(), String> {
+    let store = backup_store(store);
+    let mut conn = connect(target)?;
+    let access = conn.module.adaptation().ok_or(NO_ADAPTATION)?;
+    let change = plan_change(access, channel, value).map_err(|e| e.to_string())?;
+    if change.old == change.new {
+        println!("Channel {channel} already has value {value}; nothing to change.");
+        return Ok(());
+    }
+    println!(
+        "Adaptation channel {channel}: {} -> {}",
+        change.old, change.new
+    );
+    print_write_warning(&store);
+    if !confirm()? {
+        println!("Cancelled; nothing was changed.");
+        return Ok(());
+    }
+    let confirmation = WriteConfirmation::for_change(&change);
+    let applied = apply_change(access, &store, &change, workshop_code, &confirmation)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "Done and verified: channel {channel} now reads {}. Backup {} is in {}.",
+        change.new,
+        applied.backup_id,
+        store.path().display()
+    );
+    println!(
+        "To undo: opendiag backup restore {} (with the same connection options).",
+        applied.backup_id
+    );
+    Ok(())
+}
+
+/// `YYYY-MM-DD HH:MM:SS` in UTC from Unix seconds (civil-from-days, no date crate needed).
+fn format_unix(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+fn backup_list(store: &StoreArg) -> Result<(), String> {
+    let store = backup_store(store);
+    let records = store.records().map_err(|e| e.to_string())?;
+    if records.is_empty() {
+        println!("No backups recorded in {}.", store.path().display());
+        return Ok(());
+    }
+    println!("Backups in {}:", store.path().display());
+    for r in &records {
+        let restore = r
+            .restores
+            .as_ref()
+            .map(|id| format!(" (restores {id})"))
+            .unwrap_or_default();
+        println!(
+            "{}  {} UTC  {} module {:#04X} {} channel {}: {} -> {}  [{:?}]{restore}",
+            r.id,
+            format_unix(r.created_unix),
+            r.protocol,
+            r.module_address,
+            r.kind,
+            r.channel,
+            r.old_value,
+            r.new_value,
+            r.status
+        );
+        if let Some(note) = &r.note {
+            println!("      note: {note}");
+        }
+    }
+    Ok(())
+}
+
+fn backup_restore(
+    id: &str,
+    target: &Target,
+    workshop_code: u32,
+    store: &StoreArg,
+) -> Result<(), String> {
+    let store = backup_store(store);
+    let mut conn = connect(target)?;
+    let access = conn.module.adaptation().ok_or(NO_ADAPTATION)?;
+    let (record, change) = plan_restore(access, &store, id).map_err(|e| e.to_string())?;
+    if change.old == change.new {
+        println!(
+            "Channel {} already has the backed-up value {}; nothing to restore.",
+            change.channel, change.new
+        );
+        return Ok(());
+    }
+    println!(
+        "Restore backup {id}: channel {} currently {}, will be set back to {}",
+        change.channel, change.old, change.new
+    );
+    print_write_warning(&store);
+    if !confirm()? {
+        println!("Cancelled; nothing was changed.");
+        return Ok(());
+    }
+    let confirmation = WriteConfirmation::for_change(&change);
+    let applied = apply_restore(
+        access,
+        &store,
+        &record,
+        &change,
+        workshop_code,
+        &confirmation,
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "Restored and verified: channel {} reads {}. This restore is itself backup {}.",
+        change.channel, change.new, applied.backup_id
+    );
     Ok(())
 }
 

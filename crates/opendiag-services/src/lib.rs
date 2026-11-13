@@ -3,10 +3,17 @@
 //! Currently UDS only: identification, DTC read, and DTC clear with a mandatory
 //! confirmation token and a record of what was cleared.
 
+pub mod adaptation;
+pub mod backup;
 pub mod demo;
 mod kw1281_module;
 pub mod live;
 
+pub use adaptation::{
+    apply_change, apply_restore, plan_change, plan_restore, AdaptationAccess, Applied, Change,
+    WriteConfirmation, WriteToken,
+};
+pub use backup::{BackupRecord, BackupStatus, BackupStore};
 pub use kw1281_module::Kw1281Module;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
 
@@ -119,6 +126,11 @@ pub trait Module {
 
     /// Live measuring data, if this kind of module supports it (KW1281 only so far).
     fn live(&mut self) -> Option<&mut dyn LiveData> {
+        None
+    }
+
+    /// Adaptation channels, if this kind of module has them (KW1281 only so far).
+    fn adaptation(&mut self) -> Option<&mut dyn AdaptationAccess> {
         None
     }
 }

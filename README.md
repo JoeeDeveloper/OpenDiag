@@ -10,7 +10,7 @@ An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi
 |---|---|
 | Protocols | ISO-TP, UDS, KWP2000 (K-line), KW1281 (5-baud init), TP2.0, all against simulators |
 | Transports | Serial K-line (Windows/Linux/macOS), SocketCAN (Linux), Simulator, Replay |
-| CLI | `scan`, `dtc read/clear`, `log` (live data to CSV), `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
+| CLI | `scan`, `dtc read/clear`, `log` (live data to CSV), `adaptation read/set`, `backup list/restore`, `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
 | Data | Open YAML format with validator and generated JSON Schema (CC0-1.0) |
 
 Try it without a car:
@@ -23,7 +23,7 @@ cargo run -p opendiag-cli -- log --simulate-kw1281 --groups 1,2 --samples 4 --in
 
 ## Safety
 
-- Read-only by default. Clearing trouble codes is the only write, behind a typed confirmation, and nothing flashes or reprograms.
+- Read-only by default. Writes are limited to clearing trouble codes and KW1281 adaptation changes. Adaptation changes always take a durable backup first, need a typed confirmation of the exact diff (no `--yes`), and are verified by reading back; see [docs/safety.md](docs/safety.md). Nothing flashes or reprograms.
 - Clean-room: no proprietary data. See [docs/legal.md](docs/legal.md) and [docs/sources.md](docs/sources.md).
 - Roadmap: [PROJECT_PLAN.md](PROJECT_PLAN.md).
 
