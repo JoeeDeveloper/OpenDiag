@@ -1113,6 +1113,18 @@ fn backup_list(store: &StoreArg) -> Result<(), String> {
             for c in &r.codes {
                 println!("      was: {c}");
             }
+        } else if r.kind == "block_write" {
+            println!(
+                "{}  {} UTC  {} block {:#06X} written  [{:?}]{restore}",
+                r.id,
+                format_unix_utc(r.created_unix),
+                r.module.as_deref().unwrap_or(&r.protocol),
+                r.block.unwrap_or(0),
+                r.status
+            );
+            println!("      was: {}", r.old_hex.as_deref().unwrap_or("?"));
+            println!("      now: {}", r.new_hex.as_deref().unwrap_or("?"));
+            println!("      undo: opendiag bmw block restore {}", r.id);
         } else {
             println!(
                 "{}  {} UTC  {} module {:#04X} {} channel {}: {} -> {}  [{:?}]{restore}",

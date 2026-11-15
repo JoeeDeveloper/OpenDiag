@@ -1,6 +1,6 @@
 # BMW F-series (ENET / HSFZ)
 
-**Status: simulator-tested only.** None of this has run against a real car, gateway or ENET cable. Read-only, except `dtc clear`, which uses the guarded flow below.
+**Status: simulator-tested only.** None of this has run against a real car, gateway or ENET cable. Read-only by default. The only writes are `dtc clear` and `block write/restore`, both through the guarded flow below.
 
 ```bash
 opendiag bmw discover                 # find gateways (UDP broadcast, port 6811)
@@ -9,6 +9,9 @@ opendiag bmw did --target 0x12 0xF190 # read one data identifier from one ECU
 opendiag bmw scan [--all]             # which ECUs answer, and how many fault codes each holds
 opendiag bmw dtc read --target 0x12   # stored fault codes (raw hex + status flags)
 opendiag bmw dtc clear --target 0x12  # guarded: snapshot, typed YES, clear, re-read
+opendiag bmw block read --target 0x12 --did 0x2000            # raw block as hex
+opendiag bmw block write --target 0x12 --did 0x2000 --hex ... # guarded write
+opendiag bmw block restore b0003 --target 0x12                # put a backed-up block back
 opendiag bmw live --target 0x12 --did 0x4002,0xF190 --samples 20   # raw CSV log
 opendiag bmw ident --simulate         # no car: built-in virtual BMW (works for every command)
 ```
@@ -46,6 +49,32 @@ write mode.
 - **ECU address table** (`crates/opendiag-bmw/src/ecus.rs`): six names, **NOT VERIFIED**, labels only. It does
   not affect what is sent.
 
+### Step 3: raw block write (guarded)
+
+`block write` replaces one data block, addressed by a data identifier **you** supply, with new bytes of the same
+length. It is raw bytes only: nothing here knows what the bytes mean, and no DID for coding data is built in,
+because we have no verified one. Decoding (FDL/CAFD) is design only and will load from your own local
+PSdZData path; BMW data is never bundled (see [legal.md](legal.md)).
+
+The flow (`opendiag-services/src/block.rs`, shared by any protocol):
+
+1. the confirmation must be bound to the exact change shown (old bytes, new bytes, DID);
+2. identification identifiers (`0xF100`-`0xF1FF`, VIN and part numbers), identical blocks and length changes are refused;
+3. the block is re-read and must still equal what was shown;
+4. the complete old block is written to the backup file and flushed. If that fails, nothing is sent;
+5. the write is sent (a `WriteToken` only this flow can create);
+6. the block is read back and must equal what was written. Otherwise the backup is marked `verification_failed`
+   and the error names it. Nothing is rewritten automatically.
+
+`block restore <id>` is the same guarded flow in reverse, from the stored old block, and marks the original
+`restored`. It refuses a backup taken from a different ECU. There is no `--yes`. The block-write path is part of
+`write_safety.rs`. Programming sessions and flash services stay refused at the link; `--extended-session` opens
+`0x10 03` only, and is off by default because whether it is needed is unverified.
+
+**Do not use this on a real car yet.** The write itself, the DID, the ECU's session and any security-access
+requirement are all unverified. Keep a charger connected and the ignition on, and expect to need a capture from
+your own car first.
+
 ## Verified vs unverified
 
 Verified against public sources (see [sources.md](sources.md)):
@@ -73,3 +102,5 @@ Verified against public sources (see [sources.md](sources.md)):
 - How a real gateway reports an address with no ECU (silence or an error frame). The scan treats both as absent.
 - The names in the ECU address table.
 - Whether `0x14 FFFFFF` clears every ECU's codes on a real F30, or only some groups.
+- Which data identifiers hold coding blocks on an F-series ECU, whether `0x2E` on them needs an extended session
+  or security access, and whether the ECU accepts a whole-block write. Not guessed anywhere: you pass the DID.

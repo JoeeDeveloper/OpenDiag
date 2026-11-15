@@ -35,6 +35,8 @@ pub struct VirtualEcu {
     pub dtcs: Vec<(u32, u8)>,
     /// DIDs that first answer "response pending" (0x78) once.
     pub slow_dids: BTreeSet<u16>,
+    /// DIDs that acknowledge a write but do not store it (to test read-back checks).
+    pub ignore_writes: BTreeSet<u16>,
 }
 
 /// A simulated car: a gateway plus ECUs, all addressed through the gateway.
@@ -66,6 +68,10 @@ impl VirtualVehicle {
         dme.slow_dids.insert(0x4001);
         dme.dids.insert(0x4001, vec![0x12, 0x34]);
         dme.dids.insert(0x4002, vec![0x0B, 0xB8]);
+        // Two invented 8-byte blocks standing in for coding data. The second never keeps a write.
+        dme.dids.insert(0x2000, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        dme.dids.insert(0x2001, vec![0; 8]);
+        dme.ignore_writes.insert(0x2001);
         let mut egs = VirtualEcu {
             address: 0x18,
             ..Default::default()
@@ -134,7 +140,20 @@ impl VirtualVehicle {
                     vec![nrc(0x31)]
                 }
             }
-            (0x19 | 0x22 | 0x14, _) => vec![nrc(0x13)],
+            (0x2E, [_, hi, lo, data @ ..]) => {
+                let did = u16::from_be_bytes([*hi, *lo]);
+                match ecu.dids.get(&did) {
+                    None => vec![nrc(0x31)],
+                    Some(cur) if cur.len() != data.len() => vec![nrc(0x13)],
+                    Some(_) => {
+                        if !ecu.ignore_writes.contains(&did) {
+                            ecu.dids.insert(did, data.to_vec());
+                        }
+                        vec![vec![0x6E, *hi, *lo]]
+                    }
+                }
+            }
+            (0x19 | 0x22 | 0x14 | 0x2E, _) => vec![nrc(0x13)],
             _ => vec![nrc(0x11)],
         })
     }

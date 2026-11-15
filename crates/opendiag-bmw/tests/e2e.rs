@@ -12,7 +12,10 @@ use opendiag_bmw::{
 use opendiag_core::{Error, WriteMode};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::uds::{UdsClient, UdsConfig};
-use opendiag_services::{apply_clear, plan_clear, BackupStore, ClearConfirmation, Module};
+use opendiag_services::{
+    apply_block_change, apply_clear, plan_block_change, plan_block_restore, plan_clear,
+    BackupStatus, BackupStore, BlockAccess, BlockConfirmation, ClearConfirmation, Module,
+};
 
 type Link = HsfzLink<TcpByteStream, SystemClock>;
 
@@ -300,4 +303,173 @@ fn live_data_logs_raw_values_on_a_steady_grid() {
     assert_eq!(lines.len(), 10);
     assert!(lines[1].ends_with("0x4002,ok,0BB8"), "{}", lines[1]);
     assert!(lines[3].ends_with("0xBEEF,absent,"), "{}", lines[3]);
+}
+
+fn writes_seen(mock: &MockGateway) -> usize {
+    mock.requests().iter().filter(|(_, r)| r[0] == 0x2E).count()
+}
+
+fn changed(block: &[u8], at: usize, to: u8) -> Vec<u8> {
+    let mut v = block.to_vec();
+    v[at] = to;
+    v
+}
+
+#[test]
+fn a_block_write_is_backed_up_written_and_read_back() {
+    let (mock, gw) = setup();
+    let store = temp_store("block-ok");
+    let mut e = ecu(&gw, 0x12);
+    let old = e.read_block(0x2000).unwrap();
+    let change = plan_block_change(&mut e, 0x2000, changed(&old, 3, 0xAA)).unwrap();
+    assert_eq!(change.differing_offsets(), vec![3]);
+    assert_eq!(writes_seen(&mock), 0, "planning must not write");
+    let done = apply_block_change(
+        &mut e,
+        &store,
+        &change,
+        &BlockConfirmation::for_change(&change),
+    )
+    .unwrap();
+    assert_eq!(e.read_block(0x2000).unwrap(), changed(&old, 3, 0xAA));
+    let rec = store.get(&done.backup_id).unwrap().unwrap();
+    assert_eq!(rec.kind, "block_write");
+    assert_eq!(rec.old_hex.as_deref(), Some("0102030405060708"));
+    assert_eq!(rec.new_hex.as_deref(), Some("010203AA05060708"));
+    assert_eq!(rec.status, BackupStatus::Verified);
+    let _ = std::fs::remove_file(store.path());
+}
+
+#[test]
+fn a_block_write_can_be_restored_byte_for_byte() {
+    let (_mock, gw) = setup();
+    let store = temp_store("block-restore");
+    let mut e = ecu(&gw, 0x12);
+    let old = e.read_block(0x2000).unwrap();
+    let change = plan_block_change(&mut e, 0x2000, changed(&old, 0, 0xFF)).unwrap();
+    let done = apply_block_change(
+        &mut e,
+        &store,
+        &change,
+        &BlockConfirmation::for_change(&change),
+    )
+    .unwrap();
+    let back = plan_block_restore(&mut e, &store, &done.backup_id).unwrap();
+    assert_eq!(back.new, old);
+    let again =
+        apply_block_change(&mut e, &store, &back, &BlockConfirmation::for_change(&back)).unwrap();
+    assert_eq!(e.read_block(0x2000).unwrap(), old);
+    assert_eq!(
+        store.get(&done.backup_id).unwrap().unwrap().status,
+        BackupStatus::Restored
+    );
+    assert_eq!(
+        store
+            .get(&again.backup_id)
+            .unwrap()
+            .unwrap()
+            .restores
+            .as_deref(),
+        Some(done.backup_id.as_str())
+    );
+    let _ = std::fs::remove_file(store.path());
+}
+
+#[test]
+fn a_write_the_ecu_does_not_keep_is_reported_and_recorded() {
+    let (_mock, gw) = setup();
+    let store = temp_store("block-lie");
+    let mut e = ecu(&gw, 0x12);
+    let change = plan_block_change(&mut e, 0x2001, vec![9; 8]).unwrap();
+    let err = apply_block_change(
+        &mut e,
+        &store,
+        &change,
+        &BlockConfirmation::for_change(&change),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("reads back differently"), "{err}");
+    let rec = store.records().unwrap().pop().unwrap();
+    assert_eq!(rec.status, BackupStatus::VerificationFailed);
+    assert_eq!(rec.old_hex.as_deref(), Some("0000000000000000"));
+    let _ = std::fs::remove_file(store.path());
+}
+
+#[test]
+fn refused_block_writes_send_nothing() {
+    let (mock, gw) = setup();
+    let store = temp_store("block-refused");
+    let mut e = ecu(&gw, 0x12);
+    let old = e.read_block(0x2000).unwrap();
+    let change = plan_block_change(&mut e, 0x2000, changed(&old, 1, 0x77)).unwrap();
+
+    // Confirmation for a different change.
+    let other = plan_block_change(&mut e, 0x2000, changed(&old, 2, 0x77)).unwrap();
+    assert!(apply_block_change(
+        &mut e,
+        &store,
+        &change,
+        &BlockConfirmation::for_change(&other)
+    )
+    .is_err());
+    // Not a change.
+    let same = plan_block_change(&mut e, 0x2000, old.clone()).unwrap();
+    assert!(
+        apply_block_change(&mut e, &store, &same, &BlockConfirmation::for_change(&same)).is_err()
+    );
+    // Length change.
+    let short = plan_block_change(&mut e, 0x2000, old[..4].to_vec()).unwrap();
+    assert!(apply_block_change(
+        &mut e,
+        &store,
+        &short,
+        &BlockConfirmation::for_change(&short)
+    )
+    .is_err());
+    // Identity data (the VIN) is never writable.
+    assert!(plan_block_change(&mut e, 0xF190, vec![0; 17]).is_err());
+    // Snapshot cannot be written.
+    let bad = BackupStore::new("no-such-directory-xyz/backups.jsonl");
+    assert!(apply_block_change(
+        &mut e,
+        &bad,
+        &change,
+        &BlockConfirmation::for_change(&change)
+    )
+    .is_err());
+
+    assert_eq!(writes_seen(&mock), 0, "no write may reach the ECU");
+    assert!(!store.path().exists());
+    assert_eq!(e.read_block(0x2000).unwrap(), old);
+}
+
+#[test]
+fn restoring_from_another_modules_backup_is_refused() {
+    let (_mock, gw) = setup();
+    let store = temp_store("block-other");
+    let mut a = ecu(&gw, 0x12);
+    let old = a.read_block(0x2000).unwrap();
+    let change = plan_block_change(&mut a, 0x2000, changed(&old, 0, 0x42)).unwrap();
+    let done = apply_block_change(
+        &mut a,
+        &store,
+        &change,
+        &BlockConfirmation::for_change(&change),
+    )
+    .unwrap();
+    let mut other = ecu(&gw, 0x60);
+    assert!(plan_block_restore(&mut other, &store, &done.backup_id).is_err());
+    let _ = std::fs::remove_file(store.path());
+}
+
+#[test]
+fn the_extended_session_is_opt_in_and_the_programming_session_is_still_refused() {
+    let (mock, gw) = setup();
+    let mut plain = ecu(&gw, 0x12);
+    plain.read_block(0x2000).unwrap();
+    assert!(!mock.requests().iter().any(|(_, r)| r[0] == 0x10));
+    let mut ext = BmwEcu::new(gw.link(0x12), 0x12, UdsConfig::default()).with_extended_session();
+    ext.read_block(0x2000).unwrap();
+    assert!(mock.requests().iter().any(|(_, r)| r == &[0x10, 0x03]));
+    assert!(!mock.requests().iter().any(|(_, r)| r[..2] == [0x10, 0x02]));
 }

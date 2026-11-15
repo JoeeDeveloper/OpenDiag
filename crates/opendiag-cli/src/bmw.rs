@@ -14,7 +14,10 @@ use opendiag_bmw::{
 };
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::uds::{UdsClient, UdsConfig};
-use opendiag_services::{apply_clear, plan_clear, ClearConfirmation, DtcReport, Module};
+use opendiag_services::{
+    apply_block_change, apply_clear, plan_block_change, plan_block_restore, plan_clear, unhex,
+    BlockAccess, BlockChange, BlockConfirmation, ClearConfirmation, DtcReport, Module,
+};
 
 use crate::{backup_store, confirm, StoreArg};
 
@@ -58,6 +61,12 @@ pub enum BmwCmd {
         #[command(subcommand)]
         action: BmwDtc,
     },
+    /// Read, write or restore a raw data block (coding data) of one ECU. Writes are
+    /// guarded: backup first, typed confirmation, read-back check. No --yes.
+    Block {
+        #[command(subcommand)]
+        action: BmwBlock,
+    },
     /// Log data identifiers from one ECU as raw CSV at a steady rate.
     Live {
         #[command(flatten)]
@@ -74,6 +83,49 @@ pub enum BmwCmd {
         /// Write the CSV here instead of standard output.
         #[arg(long)]
         out: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Args)]
+pub struct BlockConn {
+    #[command(flatten)]
+    conn: Conn,
+    /// Open the extended diagnostic session (0x10 03) first. Whether an F-series
+    /// ECU needs it is unverified, so it is off by default.
+    #[arg(long)]
+    extended_session: bool,
+}
+
+#[derive(Subcommand)]
+pub enum BmwBlock {
+    /// Print one block as hex (read-only).
+    Read {
+        #[command(flatten)]
+        bc: BlockConn,
+        /// Data identifier of the block, in hex.
+        #[arg(long, value_parser = parse_hex_u16)]
+        did: u16,
+    },
+    /// Replace one block with new hex bytes of the same length.
+    Write {
+        #[command(flatten)]
+        bc: BlockConn,
+        #[arg(long, value_parser = parse_hex_u16)]
+        did: u16,
+        /// The complete new block as hex, e.g. 010203AA05060708.
+        #[arg(long)]
+        hex: String,
+        #[command(flatten)]
+        store: StoreArg,
+    },
+    /// Put a block back from a backup id (see `opendiag backup list`).
+    Restore {
+        #[command(flatten)]
+        bc: BlockConn,
+        /// Backup id, e.g. b0003.
+        id: String,
+        #[command(flatten)]
+        store: StoreArg,
     },
 }
 
@@ -139,6 +191,7 @@ pub fn run(cmd: BmwCmd) -> Result<(), String> {
         BmwCmd::Dtc {
             action: BmwDtc::Clear { conn, store },
         } => dtc_clear_cmd(&conn, &store),
+        BmwCmd::Block { action } => block_cmd(action),
         BmwCmd::Live {
             conn,
             did,
@@ -424,6 +477,109 @@ fn live_cmd(
     eprintln!(
         "Logged {} round(s), {} row(s). Values are raw hex, not converted to units.",
         summary.samples, summary.rows
+    );
+    Ok(())
+}
+
+fn block_ecu(bc: &BlockConn) -> Result<(CliEcu, Session), String> {
+    let s = connect(&bc.conn)?;
+    let mut ecu = ecu_of(&s);
+    if bc.extended_session {
+        ecu = ecu.with_extended_session();
+    }
+    Ok((ecu, s))
+}
+
+fn hex_str(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02X}")).collect()
+}
+
+fn block_cmd(action: BmwBlock) -> Result<(), String> {
+    match action {
+        BmwBlock::Read { bc, did } => {
+            let (mut ecu, s) = block_ecu(&bc)?;
+            let b = ecu.read_block(did).map_err(|e| e.to_string())?;
+            println!(
+                "ECU {:#04X} block {did:#06X} ({} bytes): {}",
+                s.target,
+                b.len(),
+                hex_str(&b)
+            );
+            Ok(())
+        }
+        BmwBlock::Write {
+            bc,
+            did,
+            hex,
+            store,
+        } => {
+            let new = unhex(hex.trim()).ok_or("--hex must be an even number of hex digits")?;
+            let (mut ecu, s) = block_ecu(&bc)?;
+            let change = plan_block_change(&mut ecu, did, new).map_err(|e| e.to_string())?;
+            block_apply(
+                &mut ecu,
+                &s,
+                &backup_store(&store),
+                &change,
+                bc.conn.simulate,
+            )
+        }
+        BmwBlock::Restore { bc, id, store } => {
+            let store = backup_store(&store);
+            let (mut ecu, s) = block_ecu(&bc)?;
+            let change = plan_block_restore(&mut ecu, &store, &id).map_err(|e| e.to_string())?;
+            block_apply(&mut ecu, &s, &store, &change, bc.conn.simulate)
+        }
+    }
+}
+
+fn block_apply(
+    ecu: &mut CliEcu,
+    s: &Session,
+    store: &opendiag_services::BackupStore,
+    change: &BlockChange,
+    simulate: bool,
+) -> Result<(), String> {
+    println!(
+        "ECU {:#04X} block {:#06X} ({} bytes)",
+        s.target,
+        change.id,
+        change.old.len()
+    );
+    println!("  now: {}", hex_str(&change.old));
+    println!("  new: {}", hex_str(&change.new));
+    let diff = change.differing_offsets();
+    if change.old.len() == change.new.len() {
+        println!("  {} byte(s) differ, at offset(s) {:?}", diff.len(), diff);
+    }
+    if change.old == change.new {
+        println!("The new block equals the current one; nothing to do.");
+        return Ok(());
+    }
+    println!(
+        "The whole current block is saved to {} first, and the ECU is read back afterwards.",
+        store.path().display()
+    );
+    println!(
+        "Coding errors can make an ECU misbehave. This has only been tested against a simulator."
+    );
+    if !simulate {
+        println!("Keep the ignition on and a battery charger connected until this finishes.");
+    }
+    if !confirm()? {
+        println!("Cancelled; nothing was changed.");
+        return Ok(());
+    }
+    let done = apply_block_change(ecu, store, change, &BlockConfirmation::for_change(change))
+        .map_err(|e| e.to_string())?;
+    println!(
+        "Written and verified by reading it back. Backup {} is in {}.",
+        done.backup_id,
+        store.path().display()
+    );
+    println!(
+        "To undo: opendiag bmw block restore {} (same connection options).",
+        done.backup_id
     );
     Ok(())
 }

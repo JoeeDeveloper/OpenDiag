@@ -105,7 +105,7 @@ Key design points:
 
 ### Phase B - BMW F-series over ENET (branch `feat/bmw-backend`)
 
-Status: steps 1 and 2 done and **simulator-tested only**. New crate `opendiag-bmw`: HSFZ framing, TCP gateway session, UDP discovery, VIN / I-level / FA reads, mock gateway, `opendiag bmw` CLI. UDS now runs over a `MessageLink` trait so HSFZ reuses the VAG-proven client. Step 2 added: ECU scan, BMW hex DTC read and guarded clear (in `write_safety.rs`), raw DID live logging, a small unverified ECU address table. Next: backup + coding (design only), local-only PSdZData/CAFD decoding, and the `VehicleBackend` trait extracted from the two implementations. See [docs/bmw.md](docs/bmw.md).
+Status: steps 1-3 done and **simulator-tested only**. New crate `opendiag-bmw`: HSFZ framing, TCP gateway session, UDP discovery, VIN / I-level / FA reads, mock gateway, `opendiag bmw` CLI. UDS now runs over a `MessageLink` trait so HSFZ reuses the VAG-proven client. Step 2 added: ECU scan, BMW hex DTC read and guarded clear (in `write_safety.rs`), raw DID live logging, a small unverified ECU address table. Step 3 added: guarded raw block write/restore (`opendiag-services::block`, backup-first, read-back verify, in `write_safety.rs`; DID supplied by the user). Next: FDL decode (design only), local-only PSdZData/CAFD decoding, and the `VehicleBackend` trait extracted from the two implementations. See [docs/bmw.md](docs/bmw.md).
 
 ## 5. Repo layout
 

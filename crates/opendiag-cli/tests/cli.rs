@@ -1288,3 +1288,87 @@ fn bmw_simulated_live_logs_raw_csv() {
     assert!(out.contains("0xBEEF,absent,"), "{out}");
     assert_eq!(out.lines().count(), 5, "{out}");
 }
+
+fn bmw_block_args<'a>(sub: &'a [&'a str], backups: &'a str) -> Vec<&'a str> {
+    let mut v = vec!["bmw", "block"];
+    v.extend_from_slice(sub);
+    v.extend_from_slice(&["--simulate", "--target", "0x12", "--backup-file", backups]);
+    v
+}
+
+#[test]
+fn bmw_block_read_and_guarded_write_in_the_simulator() {
+    let backups = temp_file("bmw-block.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let (ok, out, err) = run(
+        &[
+            "bmw",
+            "block",
+            "read",
+            "--simulate",
+            "--target",
+            "0x12",
+            "--did",
+            "0x2000",
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("0102030405060708"), "{out}");
+
+    let args = bmw_block_args(
+        &["write", "--did", "0x2000", "--hex", "010203AA05060708"],
+        b,
+    );
+    // Not YES: nothing written, no backup.
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(ok);
+    assert!(out.contains("Cancelled"), "{out}");
+    assert!(out.contains("offset(s) [3]"), "{out}");
+    assert!(!backups.exists());
+    // YES: backed up, written, verified.
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("verified by reading it back"), "{out}");
+    let text = std::fs::read_to_string(&backups).unwrap();
+    assert!(text.contains("\"old_hex\":\"0102030405060708\""), "{text}");
+    // The backup list shows it with the undo hint.
+    let (ok, out, _) = run(&["backup", "list", "--backup-file", b], "");
+    assert!(ok);
+    assert!(
+        out.contains("0x2000") && out.contains("bmw block restore"),
+        "{out}"
+    );
+    let _ = std::fs::remove_file(&backups);
+}
+
+#[test]
+fn bmw_block_write_refuses_identity_data_wrong_length_and_has_no_yes_flag() {
+    let backups = temp_file("bmw-block-refused.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0xF190", "--hex", "00"], b),
+        "YES\n",
+    );
+    assert!(!ok);
+    assert!(err.contains("identification"), "{err}");
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0x2000", "--hex", "0102"], b),
+        "YES\n",
+    );
+    assert!(!ok);
+    assert!(err.contains("length must not change"), "{err}");
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0x2000", "--hex", "zz"], b),
+        "YES\n",
+    );
+    assert!(!ok && err.contains("hex"), "{err}");
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0x2000", "--hex", "00", "--yes"], b),
+        "",
+    );
+    assert!(!ok && err.contains("--yes"), "{err}");
+    assert!(!backups.exists());
+}

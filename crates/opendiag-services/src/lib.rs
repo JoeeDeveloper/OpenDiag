@@ -5,6 +5,7 @@
 
 pub mod adaptation;
 pub mod backup;
+pub mod block;
 pub mod demo;
 pub mod fault_clear;
 mod kw1281_module;
@@ -17,6 +18,10 @@ pub use adaptation::{
     WriteConfirmation, WriteToken,
 };
 pub use backup::{BackupRecord, BackupStatus, BackupStore};
+pub use block::{
+    apply_block_change, plan_block_change, plan_block_restore, unhex, BlockAccess, BlockApplied,
+    BlockChange, BlockConfirmation,
+};
 pub use fault_clear::{apply_clear, plan_clear, ClearConfirmation, ClearOutcome, FaultAccess};
 pub use kw1281_module::Kw1281Module;
 pub use kwp_module::KwpModule;
