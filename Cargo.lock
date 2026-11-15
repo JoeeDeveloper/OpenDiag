@@ -372,12 +372,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendiag-bmw-coding"
+version = "0.1.0"
+dependencies = [
+ "opendiag-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "opendiag-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
  "getrandom",
  "opendiag-bmw",
+ "opendiag-bmw-coding",
  "opendiag-core",
  "opendiag-data",
  "opendiag-proto",

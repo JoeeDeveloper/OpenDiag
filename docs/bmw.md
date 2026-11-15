@@ -12,6 +12,9 @@ opendiag bmw dtc clear --target 0x12  # guarded: snapshot, typed YES, clear, re-
 opendiag bmw block read --target 0x12 --did 0x2000            # raw block as hex
 opendiag bmw block write --target 0x12 --did 0x2000 --hex ... # guarded write
 opendiag bmw block restore b0003 --target 0x12                # put a backed-up block back
+opendiag bmw coding show --target 0x12 --did 0x2000 --coding-file docs/examples/bmw-coding-synthetic.json
+opendiag bmw coding set  ... --field demo_mode --value sport # by name, through the guarded block flow
+opendiag bmw serve --simulate         # read-only web page for one ECU (also: opendiag serve --brand bmw)
 opendiag bmw live --target 0x12 --did 0x4002,0xF190 --samples 20   # raw CSV log
 opendiag bmw ident --simulate         # no car: built-in virtual BMW (works for every command)
 ```
@@ -74,6 +77,24 @@ The flow (`opendiag-services/src/block.rs`, shared by any protocol):
 **Do not use this on a real car yet.** The write itself, the DID, the ECU's session and any security-access
 requirement are all unverified. Keep a charger connected and the ignition on, and expect to need a capture from
 your own car first.
+
+### Choosing the brand
+
+`opendiag bmw ...` is always BMW and every existing command is VAG, exactly as before. The global `--brand`
+flag is optional: `--brand bmw` routes `serve` to the BMW backend (other VAG commands are refused with a pointer
+to their `bmw` equivalent); `--brand auto` sends one UDP discovery broadcast, uses BMW if exactly one gateway
+answers and VAG if none, errors on several, and prints what it chose before anything else is sent. The brand
+is chosen at launch, never from inside the web page.
+
+### Coding by name (our own format only)
+
+`opendiag-bmw-coding` turns a raw block into named fields using definition files in our own format
+(`opendiag-bmw-coding/0`, provenance required, strict validation; example in
+`docs/examples/bmw-coding-synthetic.json`). It is pure: `coding set` computes a complete new block with only
+that field's bits changed and hands it to the same guarded flow as `block write`. It refuses unknown fields or
+values, a block of the wrong length, a definition for a different software level (`--i-level` must match
+exactly), and unstable data (two reads must agree). **It does not read BMW's own files** (PSdZData, CAFD): their
+format is not known to us. See [design-bmw-coding-and-launcher.md](design-bmw-coding-and-launcher.md).
 
 ## Verified vs unverified
 

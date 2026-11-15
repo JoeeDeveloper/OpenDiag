@@ -139,6 +139,8 @@ Any GUI launcher (that waits for the Tauri app), an HTTP API, and cross-brand fe
 
 ## 4. Order of work and what blocks it
 
+Status: steps 1 and 3 below are implemented (router; synthetic format with `coding show/set`). Step 2 and 4 are not.
+
 1. `--brand` router and `serve --brand` (no new abstraction; low risk, can start now).
 2. `Vehicle` extraction, driven by step 1's actual call sites.
 3. Synthetic coding format and `encode_change`/`decode` with synthetic fixtures (can start now, no BMW data).

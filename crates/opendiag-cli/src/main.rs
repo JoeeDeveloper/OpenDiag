@@ -28,10 +28,24 @@ use opendiag_transport::{
     TraceStatus, Tracing, Transport,
 };
 
-/// Open source VAG group diagnostic tool.
+/// Which vehicle family a command talks to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BrandArg {
+    Vag,
+    Bmw,
+    /// Look for a BMW ENET gateway on the network: one found means BMW, none means VAG.
+    Auto,
+}
+
+/// Open source diagnostic tool for VAG group vehicles, with experimental BMW F-series support.
 #[derive(Parser)]
 #[command(name = "opendiag", version, about)]
 struct Cli {
+    /// Vehicle family. Without this flag every command behaves exactly as before (VAG; `bmw ...`
+    /// is BMW). `bmw` routes `serve` to the BMW backend; `auto` decides by ENET discovery and
+    /// prints what it chose before anything else is sent.
+    #[arg(long, global = true, value_enum)]
+    brand: Option<BrandArg>,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -307,9 +321,84 @@ struct Target {
     ecu_id: u32,
 }
 
+/// Commands that open a connection to a vehicle (the ones `--brand` is about).
+fn is_vehicle_command(c: &Cmd) -> bool {
+    matches!(
+        c,
+        Cmd::Scan(_)
+            | Cmd::Dtc { .. }
+            | Cmd::Adaptation { .. }
+            | Cmd::Log { .. }
+            | Cmd::Report { .. }
+            | Cmd::Serve { .. }
+    )
+}
+
+/// Apply `--brand`. With no flag the command is returned untouched, so existing
+/// behaviour does not change. `detect` counts BMW gateways (only called for `auto`).
+fn route(
+    brand: Option<BrandArg>,
+    detect: impl FnOnce() -> usize,
+    cmd: Option<Cmd>,
+) -> Result<Option<Cmd>, String> {
+    let Some(cmd) = cmd else { return Ok(None) };
+    let Some(brand) = brand else {
+        return Ok(Some(cmd));
+    };
+    if matches!(cmd, Cmd::Bmw { .. }) {
+        return match brand {
+            BrandArg::Vag => {
+                Err("--brand vag conflicts with `opendiag bmw ...`, which is always BMW".into())
+            }
+            _ => Ok(Some(cmd)),
+        };
+    }
+    if !is_vehicle_command(&cmd) {
+        return Ok(Some(cmd));
+    }
+    let chosen = match brand {
+        BrandArg::Auto => match detect() {
+            0 => {
+                eprintln!("--brand auto: no BMW gateway answered; using VAG.");
+                BrandArg::Vag
+            }
+            1 => {
+                eprintln!("--brand auto: a BMW gateway answered; using BMW.");
+                BrandArg::Bmw
+            }
+            n => {
+                return Err(format!(
+                    "--brand auto: {n} BMW gateways answered; say which with `--brand bmw` and `opendiag bmw ... --ip`"
+                ))
+            }
+        },
+        b => b,
+    };
+    match (chosen, cmd) {
+        (BrandArg::Bmw, Cmd::Serve { target, listen_port }) => Ok(Some(Cmd::Bmw {
+            action: bmw::BmwCmd::Serve {
+                conn: bmw::Conn::routed(target.simulate),
+                listen_port,
+            },
+        })),
+        (BrandArg::Bmw, _) => Err(
+            "with --brand bmw only `serve` is routed; use `opendiag bmw scan`, `bmw dtc read|clear`, `bmw block ...` or `bmw live`"
+                .into(),
+        ),
+        (_, c) => Ok(Some(c)),
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
+    let command = match route(cli.brand, bmw::count_gateways, cli.command) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = match command {
         None => {
             println!(
                 "opendiag {} - no command given; try --help",
@@ -978,9 +1067,19 @@ fn random_token() -> Result<String, String> {
 fn serve_cmd(target: &Target, listen_port: u16) -> Result<(), String> {
     let conn = connect(target)?;
     let Connection { module, _trace } = conn;
+    let (connection, simulated) = describe_connection(target);
+    serve_module(module, connection, simulated, listen_port)
+}
+
+/// Serve any connected module read-only on localhost until stopped.
+pub(crate) fn serve_module(
+    module: Box<dyn Module>,
+    connection: String,
+    simulated: bool,
+    listen_port: u16,
+) -> Result<(), String> {
     let mut module = module;
     let module_name = module.faults().describe();
-    let (connection, simulated) = describe_connection(target);
 
     let server = tiny_http::Server::http(("127.0.0.1", listen_port))
         .map_err(|e| format!("cannot listen on 127.0.0.1:{listen_port}: {e}"))?;
@@ -1363,4 +1462,75 @@ fn confirm() -> Result<bool, String> {
         .map_err(|e| e.to_string())?;
     // Windows PowerShell prepends a UTF-8 BOM when piping text into a program.
     Ok(line.trim_start_matches('\u{feff}').trim() == "YES")
+}
+
+#[cfg(test)]
+mod brand_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        let mut v = vec!["opendiag"];
+        v.extend_from_slice(args);
+        Cli::try_parse_from(v).unwrap()
+    }
+
+    fn never() -> usize {
+        panic!("discovery must not run");
+    }
+
+    fn is_bmw_serve(c: &Option<Cmd>) -> bool {
+        matches!(
+            c,
+            Some(Cmd::Bmw {
+                action: bmw::BmwCmd::Serve { .. }
+            })
+        )
+    }
+
+    #[test]
+    fn without_the_flag_nothing_is_routed_and_nothing_is_probed() {
+        let cli = parse(&["serve", "--simulate"]);
+        let out = route(cli.brand, never, cli.command).unwrap();
+        assert!(matches!(out, Some(Cmd::Serve { .. })));
+    }
+
+    #[test]
+    fn brand_vag_is_a_no_op_and_conflicts_with_the_bmw_command() {
+        let cli = parse(&["--brand", "vag", "scan", "--simulate"]);
+        assert!(matches!(
+            route(cli.brand, never, cli.command).unwrap(),
+            Some(Cmd::Scan(_))
+        ));
+        let cli = parse(&["--brand", "vag", "bmw", "discover", "--simulate"]);
+        assert!(route(cli.brand, never, cli.command).is_err());
+    }
+
+    #[test]
+    fn brand_bmw_routes_serve_and_explains_the_rest() {
+        let cli = parse(&["serve", "--simulate", "--brand", "bmw"]);
+        assert!(is_bmw_serve(&route(cli.brand, never, cli.command).unwrap()));
+        let cli = parse(&["--brand", "bmw", "scan", "--simulate"]);
+        let err = route(cli.brand, never, cli.command).err().unwrap();
+        assert!(err.contains("opendiag bmw scan"), "{err}");
+        // Commands that do not talk to a vehicle are left alone.
+        let cli = parse(&["--brand", "bmw", "backup", "list"]);
+        assert!(matches!(
+            route(cli.brand, never, cli.command).unwrap(),
+            Some(Cmd::Backup { .. })
+        ));
+    }
+
+    #[test]
+    fn auto_decides_by_how_many_gateways_answer() {
+        let go = |n: usize| {
+            let cli = parse(&["--brand", "auto", "serve", "--simulate"]);
+            route(cli.brand, move || n, cli.command)
+        };
+        assert!(matches!(go(0).unwrap(), Some(Cmd::Serve { .. })));
+        assert!(is_bmw_serve(&go(1).unwrap()));
+        assert!(go(2).err().unwrap().contains("2 BMW gateways"));
+        // Not a vehicle command: no discovery at all.
+        let cli = parse(&["--brand", "auto", "data", "schema"]);
+        assert!(route(cli.brand, never, cli.command).is_ok());
+    }
 }

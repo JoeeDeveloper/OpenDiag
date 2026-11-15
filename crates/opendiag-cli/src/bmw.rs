@@ -12,6 +12,7 @@ use opendiag_bmw::{
     broadcast_target, discover, log_dids_csv, read_did, read_ident, scan, BmwEcu, DidLogConfig,
     Discovered, HsfzGateway, HsfzLink, TcpByteStream,
 };
+use opendiag_bmw_coding::{decode, encode_change, CodingSource, SyntheticSource};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_services::{
@@ -67,6 +68,21 @@ pub enum BmwCmd {
         #[command(subcommand)]
         action: BmwBlock,
     },
+    /// Show or change a block by field name, using a definition file in OpenDiag's own
+    /// format (docs/examples/bmw-coding-synthetic.json). Changes go through `block write`'s
+    /// guarded flow. BMW's own files are not read.
+    Coding {
+        #[command(subcommand)]
+        action: BmwCoding,
+    },
+    /// Serve a read-only web page for one ECU on 127.0.0.1 (this computer only).
+    Serve {
+        #[command(flatten)]
+        conn: Conn,
+        /// Port to listen on (default: any free port).
+        #[arg(long, default_value_t = 0)]
+        listen_port: u16,
+    },
     /// Log data identifiers from one ECU as raw CSV at a steady rate.
     Live {
         #[command(flatten)]
@@ -94,6 +110,40 @@ pub struct BlockConn {
     /// ECU needs it is unverified, so it is off by default.
     #[arg(long)]
     extended_session: bool,
+}
+
+#[derive(Args)]
+pub struct CodingArgs {
+    #[command(flatten)]
+    bc: BlockConn,
+    /// Data identifier of the block, in hex.
+    #[arg(long, value_parser = parse_hex_u16)]
+    did: u16,
+    /// Definition file in the `opendiag-bmw-coding/0` format.
+    #[arg(long)]
+    coding_file: std::path::PathBuf,
+    /// Software level of the ECU, if the definitions name one. Must match exactly.
+    #[arg(long)]
+    i_level: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub enum BmwCoding {
+    /// Print every field of the block by name (read-only).
+    Show(CodingArgs),
+    /// Change one field by name. Prints the named change and the byte diff, then asks for YES.
+    Set {
+        #[command(flatten)]
+        args: CodingArgs,
+        /// Field name.
+        #[arg(long)]
+        field: String,
+        /// A label from the definitions, or a number (decimal or 0x hex).
+        #[arg(long)]
+        value: String,
+        #[command(flatten)]
+        store: StoreArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -162,6 +212,45 @@ pub struct Conn {
     tester: u8,
 }
 
+impl Conn {
+    /// Default options, used when `--brand bmw` routes another command here.
+    pub fn routed(simulate: bool) -> Self {
+        Self {
+            ip: None,
+            port: TCP_PORT,
+            simulate,
+            target: None,
+            tester: opendiag_bmw::hsfz::DEFAULT_TESTER,
+        }
+    }
+}
+
+/// How many gateways answer on the local network right now (UDP discovery, about
+/// 1.5 s). Used by `--brand auto`; sends only the discovery broadcast.
+pub fn count_gateways() -> usize {
+    discover(broadcast_target(), Duration::from_millis(1500)).map_or(0, |v| v.len())
+}
+
+fn serve_cmd(c: &Conn, listen_port: u16) -> Result<(), String> {
+    let s = connect(c)?;
+    let ecu = ecu_of(&s);
+    let (connection, simulated) = if c.simulate {
+        ("Simulated: built-in virtual BMW (HSFZ)".to_string(), true)
+    } else {
+        (
+            format!(
+                "BMW ENET (HSFZ), ECU {:#04X}. Experimental: simulator-tested only",
+                s.target
+            ),
+            false,
+        )
+    };
+    // `s` stays alive until the server stops (it owns the simulator, when there is one).
+    let result = crate::serve_module(Box::new(ecu), connection, simulated, listen_port);
+    drop(s);
+    result
+}
+
 fn parse_hex_u16(s: &str) -> Result<u16, String> {
     u16::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16)
         .map_err(|e| e.to_string())
@@ -192,6 +281,8 @@ pub fn run(cmd: BmwCmd) -> Result<(), String> {
             action: BmwDtc::Clear { conn, store },
         } => dtc_clear_cmd(&conn, &store),
         BmwCmd::Block { action } => block_cmd(action),
+        BmwCmd::Coding { action } => coding_cmd(action),
+        BmwCmd::Serve { conn, listen_port } => serve_cmd(&conn, listen_port),
         BmwCmd::Live {
             conn,
             did,
@@ -582,4 +673,82 @@ fn block_apply(
         done.backup_id
     );
     Ok(())
+}
+
+fn show_fields(fields: &[opendiag_bmw_coding::DecodedField]) {
+    for f in fields {
+        println!(
+            "  {:<16} = {} ({})",
+            f.name,
+            f.label.as_deref().unwrap_or("no label"),
+            f.raw
+        );
+    }
+}
+
+/// Load definitions and read the block twice: if two reads differ the data is not
+/// stable and nothing is decoded.
+fn coding_context(
+    a: &CodingArgs,
+) -> Result<(CliEcu, Session, opendiag_bmw_coding::BlockLayout, Vec<u8>), String> {
+    let text = std::fs::read_to_string(&a.coding_file)
+        .map_err(|e| format!("cannot read {}: {e}", a.coding_file.display()))?;
+    let source = SyntheticSource::from_json(&text).map_err(|e| e.to_string())?;
+    eprintln!("Definitions: {}", source.provenance);
+    let (mut ecu, s) = block_ecu(&a.bc)?;
+    let layout = source
+        .layout(s.target, a.i_level.as_deref(), a.did)
+        .map_err(|e| e.to_string())?
+        .clone();
+    let first = ecu.read_block(a.did).map_err(|e| e.to_string())?;
+    let second = ecu.read_block(a.did).map_err(|e| e.to_string())?;
+    if first != second {
+        return Err("two consecutive reads of the block differ; not decoding unstable data".into());
+    }
+    Ok((ecu, s, layout, first))
+}
+
+fn coding_cmd(action: BmwCoding) -> Result<(), String> {
+    match action {
+        BmwCoding::Show(a) => {
+            let (_, s, layout, block) = coding_context(&a)?;
+            println!(
+                "ECU {:#04X} block {:#06X}: {}",
+                s.target,
+                a.did,
+                hex_str(&block)
+            );
+            show_fields(&decode(&layout, &block).map_err(|e| e.to_string())?);
+            Ok(())
+        }
+        BmwCoding::Set {
+            args,
+            field,
+            value,
+            store,
+        } => {
+            let (mut ecu, s, layout, block) = coding_context(&args)?;
+            let new = encode_change(&layout, &block, &field, &value).map_err(|e| e.to_string())?;
+            let before = decode(&layout, &block).map_err(|e| e.to_string())?;
+            let after = decode(&layout, &new).map_err(|e| e.to_string())?;
+            for (b, a) in before.iter().zip(&after) {
+                if b.raw != a.raw {
+                    println!(
+                        "Field {}: {} -> {}",
+                        b.name,
+                        b.label.as_deref().map_or(b.raw.to_string(), str::to_string),
+                        a.label.as_deref().map_or(a.raw.to_string(), str::to_string)
+                    );
+                }
+            }
+            let change = plan_block_change(&mut ecu, args.did, new).map_err(|e| e.to_string())?;
+            block_apply(
+                &mut ecu,
+                &s,
+                &backup_store(&store),
+                &change,
+                args.bc.conn.simulate,
+            )
+        }
+    }
 }

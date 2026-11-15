@@ -1,0 +1,16 @@
+{
+  "format": "opendiag-bmw-coding/0",
+  "provenance": "Synthetic example written for OpenDiag's simulator. Not from any car, ECU or BMW file.",
+  "blocks": [
+    {
+      "ecu": 18,
+      "block": 8192,
+      "length": 8,
+      "fields": [
+        { "name": "demo_mode", "bit_offset": 0, "bit_len": 2, "values": { "0": "off", "1": "eco", "2": "sport" } },
+        { "name": "demo_flag", "bit_offset": 8, "bit_len": 1, "values": { "0": "no", "1": "yes" } },
+        { "name": "demo_limit", "bit_offset": 16, "bit_len": 8 }
+      ]
+    }
+  ]
+}

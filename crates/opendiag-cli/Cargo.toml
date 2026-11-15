@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 opendiag-bmw = { path = "../opendiag-bmw" }
+opendiag-bmw-coding = { path = "../opendiag-bmw-coding" }
 opendiag-core = { path = "../opendiag-core" }
 opendiag-data = { path = "../opendiag-data" }
 opendiag-proto = { path = "../opendiag-proto" }

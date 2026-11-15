@@ -1372,3 +1372,145 @@ fn bmw_block_write_refuses_identity_data_wrong_length_and_has_no_yes_flag() {
     assert!(!ok && err.contains("--yes"), "{err}");
     assert!(!backups.exists());
 }
+
+#[test]
+fn serve_brand_bmw_serves_the_simulated_bmw_read_only() {
+    let srv = start_server(&["--brand", "bmw", "--simulate"]);
+    let host = format!("127.0.0.1:{}", srv.port);
+    let (status, _, body) = http(srv.port, "GET", "/api/info", &host, Some(&srv.token));
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("\"simulated\":true") && body.contains("BMW"),
+        "{body}"
+    );
+    let (status, _, body) = http(srv.port, "GET", "/api/ident", &host, Some(&srv.token));
+    assert_eq!(status, 200);
+    assert!(body.contains("WBASIMULATED00001"), "{body}");
+    let (status, _, _) = http(srv.port, "POST", "/api/dtc", &host, Some(&srv.token));
+    assert_ne!(status, 200, "serve must stay read-only");
+}
+
+#[test]
+fn bmw_serve_command_works_directly_and_brand_flag_does_not_change_vag() {
+    // `--brand vag` leaves a VAG command working as before.
+    let (ok, out, err) = run(&["--brand", "vag", "scan", "--simulate"], "");
+    assert!(ok, "{err}");
+    assert!(!out.is_empty());
+    let (ok, _, err) = run(&["--brand", "bmw", "scan", "--simulate"], "");
+    assert!(!ok);
+    assert!(err.contains("opendiag bmw scan"), "{err}");
+}
+
+fn coding_example() -> String {
+    format!(
+        "{}/../../docs/examples/bmw-coding-synthetic.json",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn bmw_coding_show_names_the_fields() {
+    let f = coding_example();
+    let (ok, out, err) = run(
+        &[
+            "bmw",
+            "coding",
+            "show",
+            "--simulate",
+            "--target",
+            "0x12",
+            "--did",
+            "0x2000",
+            "--coding-file",
+            &f,
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("Synthetic example"),
+        "provenance must be shown: {err}"
+    );
+    assert!(out.contains("demo_mode") && out.contains("eco"), "{out}");
+    assert!(
+        out.contains("demo_limit") && out.contains("no label"),
+        "{out}"
+    );
+}
+
+#[test]
+fn bmw_coding_set_goes_through_the_guarded_flow() {
+    let f = coding_example();
+    let backups = temp_file("bmw-coding.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let args = [
+        "bmw",
+        "coding",
+        "set",
+        "--simulate",
+        "--target",
+        "0x12",
+        "--did",
+        "0x2000",
+        "--coding-file",
+        &f,
+        "--field",
+        "demo_mode",
+        "--value",
+        "sport",
+        "--backup-file",
+        b,
+    ];
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(ok);
+    assert!(out.contains("Field demo_mode: eco -> sport"), "{out}");
+    assert!(out.contains("Cancelled") && !backups.exists(), "{out}");
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("verified by reading it back"), "{out}");
+    let text = std::fs::read_to_string(&backups).unwrap();
+    assert!(
+        text.contains("\"old_hex\":\"0102030405060708\"")
+            && text.contains("\"new_hex\":\"0202030405060708\""),
+        "{text}"
+    );
+    let _ = std::fs::remove_file(&backups);
+}
+
+#[test]
+fn bmw_coding_refuses_unknown_values_fields_and_blocks_without_writing() {
+    let f = coding_example();
+    let backups = temp_file("bmw-coding-bad.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let base = |field: &'static str, value: &'static str, did: &'static str| {
+        run(
+            &[
+                "bmw",
+                "coding",
+                "set",
+                "--simulate",
+                "--target",
+                "0x12",
+                "--did",
+                did,
+                "--coding-file",
+                &f,
+                "--field",
+                field,
+                "--value",
+                value,
+                "--backup-file",
+                b,
+            ],
+            "YES\n",
+        )
+    };
+    assert!(!base("demo_mode", "turbo", "0x2000").0);
+    assert!(!base("demo_mode", "3", "0x2000").0);
+    assert!(!base("nope", "1", "0x2000").0);
+    let (ok, _, err) = base("demo_mode", "eco", "0x2001");
+    assert!(!ok && err.contains("no definition"), "{err}");
+    assert!(!backups.exists(), "nothing may be backed up or written");
+}
