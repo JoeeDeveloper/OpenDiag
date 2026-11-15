@@ -21,7 +21,7 @@ use opendiag_services::demo::{
 use opendiag_services::{
     apply_change, apply_clear, apply_restore, format_unix_utc, log_csv, plan_change, plan_clear,
     plan_restore, render_html, BackupStore, ClearConfirmation, DtcReport, Kw1281Module, KwpModule,
-    Limit, LogConfig, Module, Report, ReportFault, WriteConfirmation,
+    Limit, LogConfig, Module, Report, ReportFault, SingleModule, VehicleModule, WriteConfirmation,
 };
 use opendiag_transport::{
     list_serial_ports, open_can, Elm327, Elm327Emulator, Elm327Serial, KLineSerial, SerialIo,
@@ -1068,7 +1068,10 @@ fn serve_cmd(target: &Target, listen_port: u16) -> Result<(), String> {
     let conn = connect(target)?;
     let Connection { module, _trace } = conn;
     let (connection, simulated) = describe_connection(target);
-    serve_module(module, connection, simulated, listen_port)
+    // VAG connections are one module; the vehicle view makes both brands serve the same way.
+    let vehicle = SingleModule::new(module, connection.clone());
+    let module = VehicleModule::new(Box::new(vehicle), 0).map_err(|e| e.to_string())?;
+    serve_module(Box::new(module), connection, simulated, listen_port)
 }
 
 /// Serve any connected module read-only on localhost until stopped.

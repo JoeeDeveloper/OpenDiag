@@ -139,7 +139,9 @@ Any GUI launcher (that waits for the Tauri app), an HTTP API, and cross-brand fe
 
 ## 4. Order of work and what blocks it
 
-Status: steps 1 and 3 below are implemented (router; synthetic format with `coding show/set`). Step 2 and 4 are not.
+Status: steps 1, 2 and 3 below are implemented (router; `Vehicle` trait; synthetic format with `coding show/set`). Step 4 is not.
+
+Step 2 as built differs from the sketch in section 2: there is **no `connect` on the trait** (each backend is constructed already connected, since connecting shares nothing between brands), `scan` returns only ECUs that answered, and the trait lives in `opendiag-services` (no new crate, so no dependency cycle). VAG connections are wrapped by `SingleModule`; BMW by `BmwVehicle`; `VehicleModule` presents one ECU of any vehicle as a `Module`, so `serve` now runs both brands through the same path, and `bmw scan`/`bmw ident` use the trait.
 
 1. `--brand` router and `serve --brand` (no new abstraction; low risk, can start now).
 2. `Vehicle` extraction, driven by step 1's actual call sites.

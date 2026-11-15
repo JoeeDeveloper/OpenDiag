@@ -8,16 +8,18 @@ use clap::{Args, Subcommand};
 use opendiag_bmw::ecus;
 use opendiag_bmw::hsfz::{DEFAULT_GATEWAY, TCP_PORT};
 use opendiag_bmw::mock::{MockGateway, VirtualVehicle};
+use opendiag_bmw::BmwVehicle;
 use opendiag_bmw::{
-    broadcast_target, discover, log_dids_csv, read_did, read_ident, scan, BmwEcu, DidLogConfig,
-    Discovered, HsfzGateway, HsfzLink, TcpByteStream,
+    broadcast_target, discover, log_dids_csv, read_did, scan, BmwEcu, DidLogConfig, Discovered,
+    HsfzGateway, HsfzLink, TcpByteStream,
 };
 use opendiag_bmw_coding::{decode, encode_change, CodingSource, SyntheticSource};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::uds::{UdsClient, UdsConfig};
 use opendiag_services::{
     apply_block_change, apply_clear, plan_block_change, plan_block_restore, plan_clear, unhex,
-    BlockAccess, BlockChange, BlockConfirmation, ClearConfirmation, DtcReport, Module,
+    BlockAccess, BlockChange, BlockConfirmation, ClearConfirmation, DtcReport, EcuEntry, Module,
+    Vehicle, VehicleModule,
 };
 
 use crate::{backup_store, confirm, StoreArg};
@@ -233,22 +235,20 @@ pub fn count_gateways() -> usize {
 
 fn serve_cmd(c: &Conn, listen_port: u16) -> Result<(), String> {
     let s = connect(c)?;
-    let ecu = ecu_of(&s);
-    let (connection, simulated) = if c.simulate {
-        ("Simulated: built-in virtual BMW (HSFZ)".to_string(), true)
+    let simulated = c.simulate;
+    let connection = if simulated {
+        "Simulated: built-in virtual BMW (HSFZ)".to_string()
     } else {
-        (
-            format!(
-                "BMW ENET (HSFZ), ECU {:#04X}. Experimental: simulator-tested only",
-                s.target
-            ),
-            false,
+        format!(
+            "BMW ENET (HSFZ), ECU {:#04X}. Experimental: simulator-tested only",
+            s.target
         )
     };
-    // `s` stays alive until the server stops (it owns the simulator, when there is one).
-    let result = crate::serve_module(Box::new(ecu), connection, simulated, listen_port);
-    drop(s);
-    result
+    // `_mock` stays alive until the server stops (it owns the simulator, when there is one).
+    let (v, _mock) = vehicle_of(s);
+    let id = v.default_ecu();
+    let module = VehicleModule::new(Box::new(v), id).map_err(|e| e.to_string())?;
+    crate::serve_module(Box::new(module), connection, simulated, listen_port)
 }
 
 fn parse_hex_u16(s: &str) -> Result<u16, String> {
@@ -386,23 +386,33 @@ fn hex(b: &[u8]) -> String {
         .join(" ")
 }
 
+fn vehicle_of(s: Session) -> (BmwVehicle<TcpByteStream, SystemClock>, Option<MockGateway>) {
+    let Session {
+        gateway,
+        target,
+        _mock,
+    } = s;
+    (
+        BmwVehicle::new(
+            gateway,
+            target,
+            format!("BMW ENET (HSFZ), ECU {target:#04X}"),
+        ),
+        _mock,
+    )
+}
+
 fn ident_cmd(c: &Conn) -> Result<(), String> {
-    let s = connect(c)?;
-    let mut uds = UdsClient::new(s.gateway.link(s.target), UdsConfig::default());
-    let id = read_ident(&mut uds).map_err(|e| e.to_string())?;
-    println!("ECU {:#04X}", s.target);
+    let (mut v, _mock) = vehicle_of(connect(c)?);
+    let id = v.identify().map_err(|e| e.to_string())?;
+    println!("ECU {:#04X}", v.default_ecu());
     println!(
         "  VIN:      {}",
         id.vin.as_deref().unwrap_or("(not available)")
     );
-    match (&id.i_level_raw, id.i_level_text()) {
-        (_, Some(t)) => println!("  I-level:  {t}"),
-        (Some(raw), None) => println!("  I-level:  raw {}", hex(raw)),
-        (None, _) => println!("  I-level:  (not available)"),
-    }
-    match &id.fa_raw {
-        Some(raw) => println!("  FA (raw): {} (not decoded)", hex(raw)),
-        None => println!("  FA:       (not available)"),
+    for l in &id.lines {
+        let note = if l.verified { "" } else { "  [unverified]" };
+        println!("  {}: {}{note}", l.label, l.value);
     }
     println!("The I-level and FA data identifiers are unverified guesses (docs/bmw.md).");
     Ok(())
@@ -433,11 +443,13 @@ fn did_cmd(c: &Conn, did: u16) -> Result<(), String> {
 
 fn scan_cmd(c: &Conn, all: bool, probe_ms: u64) -> Result<(), String> {
     let s = connect(c)?;
-    let addresses: Vec<u8> = if all {
-        (0..=0xFFu8).filter(|a| *a != c.tester).collect()
-    } else {
-        ecus::known_addresses()
-    };
+    if !all {
+        // The brand-neutral path: ask the vehicle which ECUs it has.
+        let (mut v, _mock) = vehicle_of(s);
+        let found = v.scan().map_err(|e| e.to_string())?;
+        return print_vehicle_scan(&found);
+    }
+    let addresses: Vec<u8> = (0..=0xFFu8).filter(|a| *a != c.tester).collect();
     let found =
         scan(&s.gateway, &addresses, Duration::from_millis(probe_ms)).map_err(|e| e.to_string())?;
     let present: Vec<_> = found.iter().filter(|e| e.present).collect();
@@ -455,6 +467,29 @@ fn scan_cmd(c: &Conn, all: bool, probe_ms: u64) -> Result<(), String> {
             None => "fault codes unreadable".to_string(),
         };
         println!("  {:#04X}  {name:<6} {desc}: {codes}", e.address);
+    }
+    println!("Names come from a short unverified table (docs/bmw.md); they are labels only.");
+    Ok(())
+}
+
+fn print_vehicle_scan(found: &[EcuEntry]) -> Result<(), String> {
+    if found.is_empty() {
+        println!("No ECU answered. Check the ENET cable and that the ignition is on.");
+        return Ok(());
+    }
+    println!("{} ECU(s) answered:", found.len());
+    for e in found {
+        let desc = ecus::description(e.id).unwrap_or("not in the address table");
+        let codes = match e.dtc_count {
+            Some(0) => "no fault codes".to_string(),
+            Some(n) => format!("{n} fault code(s)"),
+            None => "fault codes unreadable".to_string(),
+        };
+        println!(
+            "  {:#04X}  {:<6} {desc}: {codes}",
+            e.id,
+            e.name.as_deref().unwrap_or("?")
+        );
     }
     println!("Names come from a short unverified table (docs/bmw.md); they are labels only.");
     Ok(())

@@ -78,6 +78,13 @@ The flow (`opendiag-services/src/block.rs`, shared by any protocol):
 requirement are all unverified. Keep a charger connected and the ignition on, and expect to need a capture from
 your own car first.
 
+### The `Vehicle` view
+
+`opendiag_services::Vehicle` (identify, scan, one ECU as a `Module`, keep-alive) is implemented by `BmwVehicle`
+here and by `SingleModule` for VAG connections. Identification lines carry a `verified` flag, so BMW's I-level
+and FA stay marked `[unverified]` wherever they are shown. Live data, adaptation and block access are not part
+of it: they stay optional abilities of an ECU.
+
 ### Choosing the brand
 
 `opendiag bmw ...` is always BMW and every existing command is VAG, exactly as before. The global `--brand`

@@ -12,6 +12,7 @@ mod kw1281_module;
 mod kwp_module;
 pub mod live;
 pub mod report;
+pub mod vehicle;
 
 pub use adaptation::{
     apply_change, apply_restore, plan_change, plan_restore, AdaptationAccess, Applied, Change,
@@ -27,6 +28,9 @@ pub use kw1281_module::Kw1281Module;
 pub use kwp_module::KwpModule;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
 pub use report::{escape_html, format_unix_utc, render_html, Report, ReportFault};
+pub use vehicle::{
+    Brand, EcuEntry, EcuId, IdentLine, SingleModule, Vehicle, VehicleIdent, VehicleModule,
+};
 
 use opendiag_core::{Error, Result, WriteMode};
 use opendiag_proto::link::MessageLink;
