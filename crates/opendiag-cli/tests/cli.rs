@@ -1160,3 +1160,33 @@ fn doctor_prints_a_summary_and_writes_it_to_a_file_without_a_vin() {
     // The summary is for sharing: it must not contain identification from modules.
     assert!(!stdout.contains("DEMO-KW-0001") && !stdout.contains("VIRTUAL ENGINE ECU"));
 }
+
+#[test]
+fn bmw_simulated_discovery_lists_the_virtual_car() {
+    let (ok, out, err) = run(&["bmw", "discover", "--simulate", "--wait-ms", "400"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("WBASIMULATED00001"), "{out}");
+    assert!(out.contains("0x10"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_ident_reads_vin_and_flags_unverified_items() {
+    let (ok, out, err) = run(&["bmw", "ident", "--simulate"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("WBASIMULATED00001"), "{out}");
+    assert!(out.contains("F020-00-00-000"), "{out}");
+    assert!(out.contains("unverified"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_did_read_and_missing_did() {
+    let (ok, out, _) = run(
+        &["bmw", "did", "--simulate", "--target", "0x12", "0xF190"],
+        "",
+    );
+    assert!(ok);
+    assert!(out.contains("57 42 41"), "{out}");
+    let (ok, out, _) = run(&["bmw", "did", "--simulate", "0xABCD"], "");
+    assert!(ok);
+    assert!(out.contains("does not have DID"), "{out}");
+}

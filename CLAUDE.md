@@ -42,4 +42,4 @@ cargo run -p opendiag-cli -- --version
 
 Before each phase, produce a short plan and acceptance tests, then implement.
 
-Status: phases 0-2 are largely done (transports, ISO-TP, UDS, KWP2000, KW1281, serial and SocketCAN drivers). Phase 3 (read-only MVP) is in progress: the CLI works against a virtual ECU, and `probe` can talk to a real K-line module. Not done: TP2.0, services/CLI wiring for KWP2000 and KW1281, live-data logging, the open data format. Nothing has been verified against a real car yet.
+Status: phases 0-2 are largely done (transports, ISO-TP, UDS, KWP2000, KW1281, serial and SocketCAN drivers). Phase 3 (read-only MVP) is in progress: the CLI works against a virtual ECU, and `probe` can talk to a real K-line module. BMW F-series (ENET/HSFZ, `opendiag-bmw`, see `docs/bmw.md`): step 1 read-only, simulator-tested only. Never bundle BMW proprietary data. Not done: TP2.0, services/CLI wiring for KWP2000 and KW1281, live-data logging, the open data format. Nothing has been verified against a real car yet.

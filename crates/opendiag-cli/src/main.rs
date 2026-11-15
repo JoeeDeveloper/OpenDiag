@@ -1,3 +1,5 @@
+mod bmw;
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -36,6 +38,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// BMW F-series over an ENET cable (HSFZ). Read-only; simulator-tested only.
+    Bmw {
+        #[command(subcommand)]
+        action: bmw::BmwCmd,
+    },
     /// Identify the module (part number, software version, VIN).
     Scan(Target),
     /// Read or clear diagnostic trouble codes.
@@ -310,6 +317,7 @@ fn main() -> ExitCode {
             );
             Ok(())
         }
+        Some(Cmd::Bmw { action }) => bmw::run(action),
         Some(Cmd::Scan(t)) => scan(&t),
         Some(Cmd::Dtc {
             action: DtcCmd::Read(t),
