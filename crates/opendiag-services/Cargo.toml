@@ -14,5 +14,9 @@ opendiag-transport = { path = "../opendiag-transport" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[dev-dependencies]
+# Test-only cycle (bmw depends on services): lets write_safety.rs cover the BMW clear flow.
+opendiag-bmw = { path = "../opendiag-bmw" }
+
 [lints]
 workspace = true

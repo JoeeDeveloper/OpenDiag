@@ -3,11 +3,16 @@
 
 use std::time::Duration;
 
+use opendiag_bmw::ecus::known_addresses;
 use opendiag_bmw::mock::{MockGateway, VirtualVehicle};
-use opendiag_bmw::{discover, read_did, read_ident, HsfzGateway, HsfzLink, TcpByteStream};
+use opendiag_bmw::{
+    discover, log_dids_csv, read_did, read_ident, scan, BmwEcu, DidLogConfig, HsfzGateway,
+    HsfzLink, TcpByteStream,
+};
 use opendiag_core::{Error, WriteMode};
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::uds::{UdsClient, UdsConfig};
+use opendiag_services::{apply_clear, plan_clear, BackupStore, ClearConfirmation, Module};
 
 type Link = HsfzLink<TcpByteStream, SystemClock>;
 
@@ -151,4 +156,148 @@ fn reconnecting_gives_a_working_session_again() {
 fn tester_present_keeps_the_session_alive() {
     let (_mock, gw) = setup();
     uds(&gw, 0x12).tester_present().unwrap();
+}
+
+fn ecu(gw: &HsfzGateway<TcpByteStream, SystemClock>, address: u8) -> BmwEcu<Link> {
+    BmwEcu::new(gw.link(address), address, UdsConfig::default())
+}
+
+fn temp_store(name: &str) -> BackupStore {
+    let path =
+        std::env::temp_dir().join(format!("opendiag-bmw-{}-{name}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    BackupStore::new(path)
+}
+
+#[test]
+fn scan_of_the_known_addresses_finds_the_ecus_and_counts_their_codes() {
+    let (_mock, gw) = setup();
+    let found = scan(&gw, &known_addresses(), Duration::from_millis(300)).unwrap();
+    let get = |a: u8| found.iter().find(|e| e.address == a).unwrap();
+    assert!(get(0x10).present);
+    assert_eq!(get(0x10).dtc_count, Some(0));
+    assert_eq!(get(0x12).dtc_count, Some(2));
+    assert_eq!(get(0x60).dtc_count, Some(1));
+    // In the table but not in this car: the gateway answers with an error frame.
+    assert!(!get(0x29).present);
+    assert_eq!(get(0x29).dtc_count, None);
+    assert!(!get(0x40).present);
+}
+
+#[test]
+fn a_full_address_sweep_finds_exactly_the_cars_ecus() {
+    let (_mock, gw) = setup();
+    let all: Vec<u8> = (0..=0xFFu8).collect();
+    let found = scan(&gw, &all, Duration::from_millis(300)).unwrap();
+    let present: Vec<u8> = found
+        .iter()
+        .filter(|e| e.present)
+        .map(|e| e.address)
+        .collect();
+    assert_eq!(present, vec![0x10, 0x12, 0x18, 0x60]);
+}
+
+#[test]
+fn scanning_never_sends_anything_but_tester_present_and_dtc_reads() {
+    let (mock, gw) = setup();
+    scan(&gw, &known_addresses(), Duration::from_millis(300)).unwrap();
+    for (_, req) in mock.requests() {
+        assert!(
+            matches!(req[0], 0x3E | 0x19),
+            "unexpected request {req:02X?}"
+        );
+    }
+}
+
+#[test]
+fn bmw_dtcs_are_shown_as_raw_hex_with_status_flags() {
+    let (_mock, gw) = setup();
+    let dtcs = ecu(&gw, 0x12).read_dtcs().unwrap();
+    assert_eq!(dtcs[0].text, "480A12");
+    assert_eq!(dtcs[0].flags, vec!["testFailed", "confirmed"]);
+}
+
+#[test]
+fn clearing_goes_through_the_guarded_flow_with_a_snapshot() {
+    let (mock, gw) = setup();
+    let store = temp_store("clear");
+    let mut e = ecu(&gw, 0x12);
+    let shown = plan_clear(e.faults()).unwrap();
+    assert_eq!(shown.len(), 2);
+    assert!(
+        !mock.requests().iter().any(|(_, r)| r[0] == 0x14),
+        "planning must not clear anything"
+    );
+    let out = apply_clear(
+        e.faults(),
+        &store,
+        &shown,
+        &ClearConfirmation::for_codes(&shown),
+    )
+    .unwrap();
+    assert_eq!(out.cleared.len(), 2);
+    assert!(out.remaining.is_empty());
+    let text = std::fs::read_to_string(store.path()).unwrap();
+    assert!(text.contains("\"kind\":\"dtc_clear\""), "{text}");
+    assert!(text.contains("hsfz-uds"), "{text}");
+    assert!(
+        text.contains("480A12"),
+        "snapshot must hold the codes: {text}"
+    );
+    assert!(text.contains("\"status\":\"verified\""), "{text}");
+    assert!(plan_clear(e.faults()).unwrap().is_empty());
+    let _ = std::fs::remove_file(store.path());
+}
+
+#[test]
+fn a_confirmation_for_other_codes_clears_nothing() {
+    let (mock, gw) = setup();
+    let store = temp_store("mismatch");
+    let mut e = ecu(&gw, 0x12);
+    let shown = plan_clear(e.faults()).unwrap();
+    let other = ClearConfirmation::for_codes(&shown[..1]);
+    assert!(apply_clear(e.faults(), &store, &shown, &other).is_err());
+    assert!(!mock.requests().iter().any(|(_, r)| r[0] == 0x14));
+    assert!(!store.path().exists());
+}
+
+#[test]
+fn clearing_is_impossible_if_the_snapshot_cannot_be_written() {
+    let (mock, gw) = setup();
+    let store = BackupStore::new("no-such-directory-xyz/backups.jsonl");
+    let mut e = ecu(&gw, 0x12);
+    let shown = plan_clear(e.faults()).unwrap();
+    assert!(apply_clear(
+        e.faults(),
+        &store,
+        &shown,
+        &ClearConfirmation::for_codes(&shown)
+    )
+    .is_err());
+    assert!(!mock.requests().iter().any(|(_, r)| r[0] == 0x14));
+    assert_eq!(
+        plan_clear(e.faults()).unwrap().len(),
+        2,
+        "codes must still be there"
+    );
+}
+
+#[test]
+fn live_data_logs_raw_values_on_a_steady_grid() {
+    let (_mock, gw) = setup();
+    let mut u = uds(&gw, 0x12);
+    let cfg = DidLogConfig {
+        dids: vec![0x4002, 0xF190, 0xBEEF],
+        interval: Duration::from_millis(10),
+        samples: 3,
+    };
+    let mut out = Vec::new();
+    let sum = log_dids_csv(&mut u, &SystemClock::new(), &cfg, &mut out).unwrap();
+    assert_eq!((sum.samples, sum.rows), (3, 9));
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "time_ms,did,status,hex");
+    assert_eq!(lines.len(), 10);
+    assert!(lines[1].ends_with("0x4002,ok,0BB8"), "{}", lines[1]);
+    assert!(lines[3].ends_with("0xBEEF,absent,"), "{}", lines[3]);
 }

@@ -1190,3 +1190,101 @@ fn bmw_simulated_did_read_and_missing_did() {
     assert!(ok);
     assert!(out.contains("does not have DID"), "{out}");
 }
+
+#[test]
+fn bmw_simulated_scan_lists_the_ecus_with_code_counts() {
+    let (ok, out, err) = run(&["bmw", "scan", "--simulate"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("4 ECU(s) answered"), "{out}");
+    assert!(
+        out.contains("0x12") && out.contains("2 fault code(s)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("0x60") && out.contains("1 fault code(s)"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("0x29"),
+        "an ECU the car lacks must not be listed: {out}"
+    );
+    let (ok, out, err) = run(&["bmw", "scan", "--simulate", "--all"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("4 ECU(s) answered"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_dtc_read_shows_raw_hex_codes() {
+    let (ok, out, err) = run(
+        &["bmw", "dtc", "read", "--simulate", "--target", "0x12"],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("480A12") && out.contains("480B01"), "{out}");
+    assert!(out.contains("confirmed"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_clear_needs_yes_snapshots_and_verifies() {
+    let backups = temp_file("bmw-clear.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let args = [
+        "bmw",
+        "dtc",
+        "clear",
+        "--simulate",
+        "--target",
+        "0x12",
+        "--backup-file",
+        b,
+    ];
+    // Anything but YES: nothing changes and no snapshot is written.
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(ok);
+    assert!(out.contains("Cancelled"), "{out}");
+    assert!(!backups.exists());
+    // YES: snapshot first, then the clear, then the re-read.
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("Cleared 2 fault code(s)"), "{out}");
+    assert!(out.contains("now reports no fault codes"), "{out}");
+    let text = std::fs::read_to_string(&backups).unwrap();
+    assert!(
+        text.contains("480A12") && text.contains("\"status\":\"verified\""),
+        "{text}"
+    );
+    let _ = std::fs::remove_file(&backups);
+}
+
+#[test]
+fn bmw_clear_has_no_yes_flag() {
+    let (ok, _, err) = run(&["bmw", "dtc", "clear", "--simulate", "--yes"], "");
+    assert!(!ok);
+    assert!(err.contains("--yes"), "{err}");
+}
+
+#[test]
+fn bmw_simulated_live_logs_raw_csv() {
+    let (ok, out, err) = run(
+        &[
+            "bmw",
+            "live",
+            "--simulate",
+            "--target",
+            "0x12",
+            "--did",
+            "0x4002,0xBEEF",
+            "--interval-ms",
+            "10",
+            "--samples",
+            "2",
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.starts_with("time_ms,did,status,hex"), "{out}");
+    assert!(out.contains("0x4002,ok,0BB8"), "{out}");
+    assert!(out.contains("0xBEEF,absent,"), "{out}");
+    assert_eq!(out.lines().count(), 5, "{out}");
+}

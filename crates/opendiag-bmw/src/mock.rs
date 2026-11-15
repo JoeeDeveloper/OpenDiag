@@ -8,7 +8,7 @@
 //! This encodes our reading of the protocol (see `hsfz.rs`), so a shared
 //! misunderstanding would not be caught. It is not evidence about a real car.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,10 +16,14 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use opendiag_core::{Error, Result};
+
+use crate::gateway::ByteStream;
 use crate::hsfz::{take_frame, HsfzFrame, CTRL_ACK, CTRL_VEHICLE_IDENT};
 
 /// A request seen by the gateway: target address and UDS bytes.
 pub type Request = (u8, Vec<u8>);
+type WriteHook = Box<dyn FnMut(&str)>;
 type RequestLog = Arc<Mutex<Vec<Request>>>;
 
 /// One simulated ECU.
@@ -61,11 +65,23 @@ impl VirtualVehicle {
         dme.dids.insert(0xF190, vin.clone().into_bytes());
         dme.slow_dids.insert(0x4001);
         dme.dids.insert(0x4001, vec![0x12, 0x34]);
+        dme.dids.insert(0x4002, vec![0x0B, 0xB8]);
+        let mut egs = VirtualEcu {
+            address: 0x18,
+            ..Default::default()
+        };
+        egs.dids.insert(0xF190, vin.clone().into_bytes());
+        let mut kombi = VirtualEcu {
+            address: 0x60,
+            dtcs: vec![(0x930001, 0x2F)],
+            ..Default::default()
+        };
+        kombi.dids.insert(0xF190, vin.clone().into_bytes());
         Self {
             vin,
             mac: "001A37B44210".into(),
             gateway: 0x10,
-            ecus: vec![gw, dme],
+            ecus: vec![gw, dme, egs, kombi],
         }
     }
 
@@ -253,26 +269,93 @@ fn serve(
                 Ok(None) => break,
                 Err(_) => return,
             };
-            let Some((src, dst, data)) = frame.as_diagnostic() else {
-                let _ = sock.write_all(&HsfzFrame::new(0x41, vec![]).encode());
-                continue;
-            };
-            requests.lock().unwrap().push((dst, data.to_vec()));
-            let replies = vehicle.lock().unwrap().respond(dst, data);
-            let out = match replies {
-                None => HsfzFrame::new(0x43, vec![dst]).encode(),
-                Some(list) => {
-                    let mut o = HsfzFrame::new(CTRL_ACK, vec![src, dst]).encode();
-                    for r in list {
-                        o.extend(HsfzFrame::diagnostic(dst, src, &r).encode());
-                    }
-                    o
-                }
-            };
+            let (request, out) = handle_frame(&mut vehicle.lock().unwrap(), &frame, None);
+            if let Some(r) = request {
+                requests.lock().unwrap().push(r);
+            }
             if sock.write_all(&out).is_err() {
                 return;
             }
         }
+    }
+}
+
+/// Answer one HSFZ frame: the request it carried (if a diagnostic message) and
+/// the bytes to send back. `on_write` is called for requests that modify an ECU,
+/// *before* the vehicle sees them (the write-safety tests use it).
+fn handle_frame(
+    vehicle: &mut VirtualVehicle,
+    frame: &HsfzFrame,
+    on_write: Option<&mut WriteHook>,
+) -> (Option<Request>, Vec<u8>) {
+    let Some((src, dst, data)) = frame.as_diagnostic() else {
+        return (None, HsfzFrame::new(0x41, vec![]).encode());
+    };
+    if let (Some(hook), Some(0x14 | 0x2E | 0x2F | 0x31)) = (on_write, data.first()) {
+        hook("write");
+    }
+    let request = (dst, data.to_vec());
+    let out = match vehicle.respond(dst, data) {
+        None => HsfzFrame::new(0x43, vec![dst]).encode(),
+        Some(list) => {
+            let mut o = HsfzFrame::new(CTRL_ACK, vec![src, dst]).encode();
+            for r in list {
+                o.extend(HsfzFrame::diagnostic(dst, src, &r).encode());
+            }
+            o
+        }
+    };
+    (Some(request), out)
+}
+
+/// A [`ByteStream`] wired straight to a [`VirtualVehicle`] in memory: no sockets,
+/// no threads, fully deterministic. For tests that need many fast runs, or that
+/// want to damage the bytes in between.
+pub struct LoopbackStream {
+    vehicle: VirtualVehicle,
+    inbuf: Vec<u8>,
+    out: VecDeque<u8>,
+    hook: Option<WriteHook>,
+}
+
+impl LoopbackStream {
+    pub fn new(vehicle: VirtualVehicle) -> Self {
+        Self {
+            vehicle,
+            inbuf: Vec::new(),
+            out: VecDeque::new(),
+            hook: None,
+        }
+    }
+
+    /// Call `hook` the moment a modifying request (0x14, 0x2E, 0x2F, 0x31) arrives.
+    pub fn on_write(mut self, hook: impl FnMut(&str) + 'static) -> Self {
+        self.hook = Some(Box::new(hook));
+        self
+    }
+}
+
+impl ByteStream for LoopbackStream {
+    fn write_all(&mut self, data: &[u8]) -> Result<()> {
+        self.inbuf.extend_from_slice(data);
+        while let Some(frame) = take_frame(&mut self.inbuf)? {
+            let (_, reply) = handle_frame(&mut self.vehicle, &frame, self.hook.as_mut());
+            self.out.extend(reply);
+        }
+        Ok(())
+    }
+
+    fn read_some(&mut self, _timeout: Duration) -> Result<Vec<u8>> {
+        if self.out.is_empty() {
+            return Err(Error::Timeout);
+        }
+        Ok(self.out.drain(..).collect())
+    }
+
+    fn reconnect(&mut self) -> Result<()> {
+        self.inbuf.clear();
+        self.out.clear();
+        Ok(())
     }
 }
 

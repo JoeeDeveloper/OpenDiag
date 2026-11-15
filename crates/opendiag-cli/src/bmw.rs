@@ -1,16 +1,22 @@
-//! `opendiag bmw ...`: BMW F-series over an ENET cable (HSFZ). Read-only.
+//! `opendiag bmw ...`: BMW F-series over an ENET cable (HSFZ). Read-only,
+//! except `dtc clear`, which goes through the guarded clear flow.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
+use opendiag_bmw::ecus;
 use opendiag_bmw::hsfz::{DEFAULT_GATEWAY, TCP_PORT};
 use opendiag_bmw::mock::{MockGateway, VirtualVehicle};
 use opendiag_bmw::{
-    broadcast_target, discover, read_did, read_ident, Discovered, HsfzGateway, TcpByteStream,
+    broadcast_target, discover, log_dids_csv, read_did, read_ident, scan, BmwEcu, DidLogConfig,
+    Discovered, HsfzGateway, HsfzLink, TcpByteStream,
 };
 use opendiag_proto::clock::SystemClock;
 use opendiag_proto::uds::{UdsClient, UdsConfig};
+use opendiag_services::{apply_clear, plan_clear, ClearConfirmation, DtcReport, Module};
+
+use crate::{backup_store, confirm, StoreArg};
 
 #[derive(Subcommand)]
 pub enum BmwCmd {
@@ -35,6 +41,53 @@ pub enum BmwCmd {
         /// Data identifier in hex, e.g. 0xF190.
         #[arg(value_parser = parse_hex_u16)]
         did: u16,
+    },
+    /// Find which ECUs answer behind the gateway, and how many fault codes each holds.
+    Scan {
+        #[command(flatten)]
+        conn: Conn,
+        /// Probe every address 0x00-0xFF instead of just the known ones (slower).
+        #[arg(long)]
+        all: bool,
+        /// How long to wait for each address, in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        probe_ms: u64,
+    },
+    /// Read or clear fault codes of one ECU (default: the gateway; pick with --target).
+    Dtc {
+        #[command(subcommand)]
+        action: BmwDtc,
+    },
+    /// Log data identifiers from one ECU as raw CSV at a steady rate.
+    Live {
+        #[command(flatten)]
+        conn: Conn,
+        /// Data identifiers in hex, comma separated, e.g. 0x4002,0xF190.
+        #[arg(long, value_delimiter = ',', required = true, value_parser = parse_hex_u16)]
+        did: Vec<u16>,
+        /// Time between rounds, in milliseconds.
+        #[arg(long, default_value_t = 500)]
+        interval_ms: u64,
+        /// Number of rounds.
+        #[arg(long, default_value_t = 10)]
+        samples: u32,
+        /// Write the CSV here instead of standard output.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BmwDtc {
+    /// List the stored fault codes (read-only).
+    Read(Conn),
+    /// Clear all stored fault codes. Saves a snapshot of them first, asks you to
+    /// confirm exactly what was shown, then checks what the ECU reports. There is no --yes.
+    Clear {
+        #[command(flatten)]
+        conn: Conn,
+        #[command(flatten)]
+        store: StoreArg,
     },
 }
 
@@ -75,6 +128,24 @@ pub fn run(cmd: BmwCmd) -> Result<(), String> {
         } => discover_cmd(to, wait_ms, simulate),
         BmwCmd::Ident(c) => ident_cmd(&c),
         BmwCmd::Did { conn, did } => did_cmd(&conn, did),
+        BmwCmd::Scan {
+            conn,
+            all,
+            probe_ms,
+        } => scan_cmd(&conn, all, probe_ms),
+        BmwCmd::Dtc {
+            action: BmwDtc::Read(conn),
+        } => dtc_read_cmd(&conn),
+        BmwCmd::Dtc {
+            action: BmwDtc::Clear { conn, store },
+        } => dtc_clear_cmd(&conn, &store),
+        BmwCmd::Live {
+            conn,
+            did,
+            interval_ms,
+            samples,
+            out,
+        } => live_cmd(&conn, did, interval_ms, samples, out),
     }
 }
 
@@ -213,5 +284,146 @@ fn did_cmd(c: &Conn, did: u16) -> Result<(), String> {
             println!("text: {text}");
         }
     }
+    Ok(())
+}
+
+fn scan_cmd(c: &Conn, all: bool, probe_ms: u64) -> Result<(), String> {
+    let s = connect(c)?;
+    let addresses: Vec<u8> = if all {
+        (0..=0xFFu8).filter(|a| *a != c.tester).collect()
+    } else {
+        ecus::known_addresses()
+    };
+    let found =
+        scan(&s.gateway, &addresses, Duration::from_millis(probe_ms)).map_err(|e| e.to_string())?;
+    let present: Vec<_> = found.iter().filter(|e| e.present).collect();
+    if present.is_empty() {
+        println!("No ECU answered. Check the ENET cable and that the ignition is on.");
+        return Ok(());
+    }
+    println!("{} ECU(s) answered:", present.len());
+    for e in present {
+        let name = ecus::name(e.address).unwrap_or("?");
+        let desc = ecus::description(e.address).unwrap_or("not in the address table");
+        let codes = match e.dtc_count {
+            Some(0) => "no fault codes".to_string(),
+            Some(n) => format!("{n} fault code(s)"),
+            None => "fault codes unreadable".to_string(),
+        };
+        println!("  {:#04X}  {name:<6} {desc}: {codes}", e.address);
+    }
+    println!("Names come from a short unverified table (docs/bmw.md); they are labels only.");
+    Ok(())
+}
+
+type CliEcu = BmwEcu<HsfzLink<TcpByteStream, SystemClock>>;
+
+fn ecu_of(s: &Session) -> CliEcu {
+    BmwEcu::new(s.gateway.link(s.target), s.target, UdsConfig::default())
+}
+
+fn print_bmw_dtcs(dtcs: &[DtcReport]) {
+    if dtcs.is_empty() {
+        println!("No fault codes stored.");
+        return;
+    }
+    for d in dtcs {
+        println!(
+            "  {}  status {:#04X}  {}",
+            d.text,
+            d.status,
+            d.flags.join(", ")
+        );
+    }
+}
+
+fn dtc_read_cmd(c: &Conn) -> Result<(), String> {
+    let s = connect(c)?;
+    let mut ecu = ecu_of(&s);
+    println!("ECU {:#04X}", s.target);
+    let dtcs = ecu.read_dtcs().map_err(|e| e.to_string())?;
+    print_bmw_dtcs(&dtcs);
+    println!("Codes are shown as raw hex; no descriptions are bundled (docs/bmw.md).");
+    Ok(())
+}
+
+fn dtc_clear_cmd(c: &Conn, store: &StoreArg) -> Result<(), String> {
+    let store = backup_store(store);
+    let s = connect(c)?;
+    let mut ecu = ecu_of(&s);
+    let shown = plan_clear(ecu.faults()).map_err(|e| e.to_string())?;
+    if shown.is_empty() {
+        println!(
+            "ECU {:#04X} has no fault codes stored; nothing to clear.",
+            s.target
+        );
+        return Ok(());
+    }
+    println!(
+        "About to clear {} fault code(s) in ECU {:#04X}:",
+        shown.len(),
+        s.target
+    );
+    print_bmw_dtcs(&shown);
+    println!(
+        "Clearing erases these codes and their status for good and cannot be undone. A snapshot of them is saved to {} first.",
+        store.path().display()
+    );
+    if !c.simulate {
+        println!("Keep the ignition on and a battery charger connected until this finishes.");
+    }
+    if !confirm()? {
+        println!("Cancelled; nothing was changed.");
+        return Ok(());
+    }
+    let confirmation = ClearConfirmation::for_codes(&shown);
+    let outcome =
+        apply_clear(ecu.faults(), &store, &shown, &confirmation).map_err(|e| e.to_string())?;
+    println!(
+        "Cleared {} fault code(s). Snapshot {} is in {}.",
+        outcome.cleared.len(),
+        outcome.backup_id,
+        store.path().display()
+    );
+    if outcome.remaining.is_empty() {
+        println!("The ECU now reports no fault codes.");
+    } else {
+        println!(
+            "Note: {} code(s) are still reported (active faults come straight back):",
+            outcome.remaining.len()
+        );
+        print_bmw_dtcs(&outcome.remaining);
+    }
+    Ok(())
+}
+
+fn live_cmd(
+    c: &Conn,
+    dids: Vec<u16>,
+    interval_ms: u64,
+    samples: u32,
+    out: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let s = connect(c)?;
+    let mut uds = UdsClient::new(s.gateway.link(s.target), UdsConfig::default());
+    let cfg = DidLogConfig {
+        dids,
+        interval: Duration::from_millis(interval_ms),
+        samples,
+    };
+    let clock = SystemClock::new();
+    let summary = match out {
+        Some(path) => {
+            let mut f = std::fs::File::create(&path)
+                .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+            log_dids_csv(&mut uds, &clock, &cfg, &mut f)
+        }
+        None => log_dids_csv(&mut uds, &clock, &cfg, &mut std::io::stdout().lock()),
+    }
+    .map_err(|e| e.to_string())?;
+    eprintln!(
+        "Logged {} round(s), {} row(s). Values are raw hex, not converted to units.",
+        summary.samples, summary.rows
+    );
     Ok(())
 }

@@ -1,12 +1,16 @@
 # BMW F-series (ENET / HSFZ)
 
-**Status: simulator-tested only.** None of this has run against a real car, gateway or ENET cable. Read-only.
+**Status: simulator-tested only.** None of this has run against a real car, gateway or ENET cable. Read-only, except `dtc clear`, which uses the guarded flow below.
 
 ```bash
 opendiag bmw discover                 # find gateways (UDP broadcast, port 6811)
 opendiag bmw ident [--ip 169.254.x.x] # VIN, I-level, FA (raw) from the gateway
 opendiag bmw did --target 0x12 0xF190 # read one data identifier from one ECU
-opendiag bmw ident --simulate         # no car: built-in virtual BMW
+opendiag bmw scan [--all]             # which ECUs answer, and how many fault codes each holds
+opendiag bmw dtc read --target 0x12   # stored fault codes (raw hex + status flags)
+opendiag bmw dtc clear --target 0x12  # guarded: snapshot, typed YES, clear, re-read
+opendiag bmw live --target 0x12 --did 0x4002,0xF190 --samples 20   # raw CSV log
+opendiag bmw ident --simulate         # no car: built-in virtual BMW (works for every command)
 ```
 
 Before connecting to a real car: ignition on, a battery charger connected. The ENET cable needs the car's
@@ -23,7 +27,24 @@ second thread could read another request's reply off the shared stream. If the g
 `HsfzGateway::reconnect` reopens it; ECU session state must then be re-established by the caller.
 
 Safety: the link refuses programming sessions (`0x10 02`) and download/transfer services (`0x34`-`0x38`) at any
-write mode. Clearing DTCs and writes are not wired to the CLI yet.
+write mode.
+
+### Step 2: scan, fault codes, live data
+
+- **Scan** probes each candidate address with TesterPresent and, for ECUs that answer, reads the fault-code
+  count. Default candidates are the short address table (`ecus.rs`); `--all` sweeps `0x00`-`0xFF`.
+  Only TesterPresent and ReadDTCInformation are sent (tested).
+- **DTCs** are shown as raw 3-byte hex (e.g. `480A12`) with decoded status bits. BMW codes are not SAE J2012
+  codes, so no `P`/`B`/`C`/`U` text is invented, and no descriptions are bundled.
+- **Clear** reuses the same guarded flow as the VAG modules (`plan_clear` / `apply_clear`): a confirmation bound
+  to the exact codes shown, a re-read, a flushed snapshot in the backup file before anything is sent, the clear,
+  and a re-read afterwards. There is no `--yes`. This path is part of
+  `crates/opendiag-services/tests/write_safety.rs` (no clear reaches the ECU without a durable snapshot, under
+  corrupted bytes, and none if the snapshot cannot be written).
+- **Live data** logs raw DID values as hex at a fixed rate. Nothing is converted to units: we have no verified
+  DID definitions. Which DIDs a given ECU offers is for you to find (`opendiag bmw did`).
+- **ECU address table** (`crates/opendiag-bmw/src/ecus.rs`): six names, **NOT VERIFIED**, labels only. It does
+  not affect what is sent.
 
 ## Verified vs unverified
 
@@ -47,3 +68,8 @@ Verified against public sources (see [sources.md](sources.md)):
   just yields "not available".
 - Whether an F30 needs ReadDTCInformation sub-functions other than `0x02`.
 - The gateway's diagnostic address (`0x10` is the usual one and is taken from discovery when available).
+- Whether an F-series ECU needs an extended diagnostic session (`0x10 03`) before ReadDTCInformation or
+  ClearDiagnosticInformation. Currently neither is sent in a special session.
+- How a real gateway reports an address with no ECU (silence or an error frame). The scan treats both as absent.
+- The names in the ECU address table.
+- Whether `0x14 FFFFFF` clears every ECU's codes on a real F30, or only some groups.

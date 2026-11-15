@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+use opendiag_bmw::mock::{LoopbackStream, VirtualVehicle};
+use opendiag_bmw::{BmwEcu, ByteStream, HsfzGateway};
 use opendiag_core::Result;
 use opendiag_proto::clock::FakeClock;
 use opendiag_proto::isotp::{Config, IsoTpLink};
@@ -356,14 +358,67 @@ fn run_tp20_clear(store: &BackupStore, seed: u64, watch: &Watch) {
     );
 }
 
+/// Damages the bytes a gateway connection delivers: flips, truncates, duplicates
+/// and invents data, so the HSFZ framing and the UDS client above it see confused
+/// and partial sessions.
+struct MutBytes<S: ByteStream> {
+    inner: S,
+    rng: Rng,
+    rate: u64,
+}
+
+impl<S: ByteStream> ByteStream for MutBytes<S> {
+    fn write_all(&mut self, data: &[u8]) -> Result<()> {
+        self.inner.write_all(data)
+    }
+
+    fn read_some(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+        let mut b = self.inner.read_some(timeout)?;
+        if self.rng.below(100) < self.rate {
+            match self.rng.below(4) {
+                0 => {
+                    let i = self.rng.below(b.len() as u64) as usize;
+                    b[i] ^= 1 << self.rng.below(8);
+                }
+                1 => b.truncate(1 + self.rng.below(b.len() as u64) as usize / 2),
+                2 => b.extend(b.clone()),
+                _ => b = (0..8).map(|_| self.rng.below(256) as u8).collect(),
+            }
+        }
+        Ok(b)
+    }
+}
+
+fn run_bmw_clear(store: &BackupStore, seed: u64, watch: &Watch) {
+    let stream = LoopbackStream::new(VirtualVehicle::demo())
+        .on_write(watch.hook(store.path(), "\"kind\":\"dtc_clear\""));
+    let stream = MutBytes {
+        inner: stream,
+        rng: Rng(seed ^ 0xB3),
+        rate: rate(seed),
+    };
+    let gw = HsfzGateway::new(stream, FakeClock::new(), 0xF4);
+    let mut ecu = BmwEcu::new(gw.link(0x12), 0x12, UdsConfig::default());
+    let Ok(shown) = plan_clear(ecu.faults()) else {
+        return;
+    };
+    let _ = apply_clear(
+        ecu.faults(),
+        store,
+        &shown,
+        &ClearConfirmation::for_codes(&shown),
+    );
+}
+
 type Run = fn(&BackupStore, u64, &Watch);
 
-const FLOWS: [(&str, Run); 5] = [
+const FLOWS: [(&str, Run); 6] = [
     ("clear over KW1281", run_kw1281_clear),
     ("clear over KWP2000 (K-line)", run_kwp_clear),
     ("adaptation over KW1281", run_kw1281_adaptation),
     ("clear over UDS (ISO-TP)", run_uds_clear),
     ("clear over KWP2000 over TP2.0", run_tp20_clear),
+    ("clear over BMW HSFZ (UDS)", run_bmw_clear),
 ];
 
 #[test]

@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 opendiag-core = { path = "../opendiag-core" }
 opendiag-proto = { path = "../opendiag-proto" }
+opendiag-services = { path = "../opendiag-services" }
 
 [lints]
 workspace = true
