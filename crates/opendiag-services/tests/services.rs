@@ -6,7 +6,7 @@ use opendiag_services::demo::{virtual_uds_client, ECU_ID, TESTER_ID};
 use opendiag_services::{identify, read_dtcs};
 use opendiag_transport::{Frame, Simulator};
 
-fn client(sim: Simulator) -> UdsClient<Simulator, FakeClock> {
+fn client(sim: Simulator) -> UdsClient<IsoTpLink<Simulator, FakeClock>> {
     let link = IsoTpLink::new(sim, FakeClock::new(), TESTER_ID, ECU_ID, Config::default());
     UdsClient::new(link, UdsConfig::default())
 }

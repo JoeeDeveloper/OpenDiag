@@ -14,7 +14,7 @@ use opendiag_services::{
 };
 use opendiag_transport::{Frame, Simulator};
 
-type Uds = UdsClient<Simulator, FakeClock>;
+type Uds = UdsClient<IsoTpLink<Simulator, FakeClock>>;
 
 fn uds(sim: Simulator) -> Uds {
     let link = IsoTpLink::new(sim, FakeClock::new(), TESTER_ID, ECU_ID, Config::default());

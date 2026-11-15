@@ -7,6 +7,7 @@ use opendiag_transport::{Frame, Transport};
 
 use super::{Config, Poll, Receiver, RxEvent, Sender};
 use crate::clock::Clock;
+use crate::link::MessageLink;
 
 /// A point-to-point ISO-TP channel using one CAN id each way (normal addressing).
 pub struct IsoTpLink<T: Transport, C: Clock> {
@@ -107,5 +108,19 @@ impl<T: Transport, C: Clock> IsoTpLink<T, C> {
     pub fn request(&mut self, payload: &[u8], timeout: Duration) -> Result<Vec<u8>> {
         self.send(payload)?;
         self.recv(timeout)
+    }
+}
+
+impl<T: Transport, C: Clock> MessageLink for IsoTpLink<T, C> {
+    fn send(&mut self, payload: &[u8]) -> Result<()> {
+        IsoTpLink::send(self, payload)
+    }
+
+    fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+        IsoTpLink::recv(self, timeout)
+    }
+
+    fn describe(&self) -> String {
+        format!("UDS ECU (request id {:#05X})", self.tx_id())
     }
 }
