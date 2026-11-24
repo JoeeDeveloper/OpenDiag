@@ -38,6 +38,22 @@ cargo test --workspace
 cargo run -p opendiag-cli -- --version
 ```
 
+## Build and publish
+
+This dev box has no Windows/macOS cross-compile toolchain (and no sudo to install one), so a local
+`cargo build --release` only produces a Linux binary -- not something Joe's Windows desktop can run from the
+`builds` share. Real distributable builds come from CI, via `.github/workflows/release.yml` (triggered by
+pushing a `v*` tag), which cross-compiles for Windows (msvc), Linux (musl) and macOS (x86_64 + aarch64) and
+attaches them to a GitHub Release. To publish one to `/home/jga/builds/OpenDiag/`:
+
+```bash
+scripts/publish_release.sh [tag]   # defaults to the latest release; verifies the SHA256SUMS first
+```
+
+It extracts the Windows build (ready to run, `.exe` already executable) into `<short-hash-of-the-tag>/` and
+`latest/`, and keeps the other platforms' archives alongside it in `other-platforms/`. Windows path:
+`N:\OpenDiag\latest\opendiag.exe`.
+
 ## Workflow
 
 Before each phase, produce a short plan and acceptance tests, then implement.
