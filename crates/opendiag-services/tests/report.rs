@@ -6,6 +6,7 @@ fn base() -> Report {
         tool_version: "0.0.1".into(),
         connection: "K-line COM3 at 10400 baud, KW1281 (5-baud init), module 0x01".into(),
         simulated: false,
+        replay: false,
         module: Some("KW1281 module 0x01".into()),
         ident: Ident {
             part_number: Some("1J0 906 018 AB".into()),
@@ -300,4 +301,14 @@ fn the_report_warns_about_privacy_and_verification() {
     let h = render_html(&base());
     assert!(h.contains("VIN") && h.contains("before sharing"));
     assert!(h.contains("not yet been verified against real vehicles"));
+}
+
+#[test]
+fn a_replayed_report_is_labelled_before_the_summary() {
+    let mut r = base();
+    r.replay = true;
+    let h = render_html(&r);
+    assert!(h.contains("REPLAYED DATA") && h.contains("recorded session"));
+    assert!(h.find("REPLAYED DATA").unwrap() < h.find("<h2>Summary</h2>").unwrap());
+    assert!(!render_html(&base()).contains("REPLAYED DATA"));
 }

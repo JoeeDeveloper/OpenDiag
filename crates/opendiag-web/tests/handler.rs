@@ -14,6 +14,7 @@ fn info(simulated: bool) -> Info {
         version: "test".into(),
         connection: "test connection".into(),
         simulated,
+        replay: false,
         module: "test module".into(),
     }
 }
@@ -368,4 +369,25 @@ fn random_requests_are_never_served_unless_every_rule_holds() {
     }
     // The test must actually exercise the success path.
     assert!(served > 50, "only {served} requests were served");
+}
+
+#[test]
+fn info_tells_the_page_whether_it_is_a_replay() {
+    let mut app = kw_app();
+    let v: serde_json::Value =
+        serde_json::from_str(&api(&mut app, "/api/info").body_text()).unwrap();
+    assert_eq!(v["replay"], false);
+    let mut replay = App::new(
+        Box::new(virtual_kw1281_module().expect("virtual module")),
+        None,
+        Info {
+            replay: true,
+            ..info(false)
+        },
+        TOKEN.into(),
+        PORT,
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&api(&mut replay, "/api/info").body_text()).unwrap();
+    assert_eq!(v["replay"], true);
 }

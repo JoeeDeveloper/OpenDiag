@@ -28,6 +28,8 @@ pub struct Report {
     pub connection: String,
     /// True when the data came from a built-in virtual module, not a vehicle.
     pub simulated: bool,
+    /// True when the data comes from a recorded session (`--replay`), not a vehicle right now.
+    pub replay: bool,
     /// Module description, e.g. `KW1281 module 0x01`.
     pub module: Option<String>,
     pub ident: Ident,
@@ -121,6 +123,12 @@ pub fn render_html(r: &Report) -> String {
     if r.simulated {
         h.push_str(
             "<p class=\"banner\" role=\"note\">SIMULATED DATA: this report comes from a built-in virtual module, not from a vehicle.</p>\n",
+        );
+    }
+
+    if r.replay {
+        h.push_str(
+            "<p class=\"banner\" role=\"note\">REPLAYED DATA: this report comes from a recorded session, not from a vehicle right now.</p>\n",
         );
     }
 

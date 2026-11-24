@@ -17,6 +17,19 @@ Say which protocol the recording used, as you would for a live connection: `--sl
 `--fast-init` for KWP2000, neither for UDS. `--replay` cannot be combined with `--simulate*`, `--port`,
 `--can`, `--elm327` or `--trace`.
 
+## Replaying the web dashboard
+
+Record exactly what the page asks for by tracing `serve`, then use the page for a while (identification,
+fault codes, start live data) and stop with Ctrl-C:
+
+```bash
+opendiag serve --port /dev/ttyUSB0 --slow-init --trace page.trace
+opendiag serve --replay page.trace --slow-init        # later, no cable
+```
+
+The page shows a **REPLAY** banner, and a report made under `--replay` is labelled *REPLAYED DATA*. Each live
+reading in the recording is played back in order, and the recording loops when it runs out.
+
 ## How it answers
 
 Each thing the tool does (send a frame, set a baud rate, start an init) is looked up in the recording
@@ -31,8 +44,11 @@ recording, as long as each was recorded at least once. This is different from `T
   ...`, naming the request. Nothing is guessed or made up. To replay `dtc read`, record `dtc read`.
 - **Replies are the recorded bytes.** A value that changes on a live car (an RPM, a counter) repeats its
   recorded value, so a replay shows a snapshot and not a running vehicle.
-- **Matching is by content.** On K-line, identical one-byte acknowledgements are ambiguous. The forward-first
-  search handles a session replayed in recorded order; out of order it can pick the wrong one.
+- **Matching is by content.** On K-line (KW1281) the recording is a stream of single bytes, so identical
+  acknowledgements are ambiguous. Replaying in recorded order works. Asking for something that was *not*
+  recorded does **not** reliably give the clean `not in recording` error there: it can surface as a protocol
+  error (for example "module acknowledged 0x03 with 0x09") or, in principle, as the wrong reply. Record
+  everything you intend to replay. CAN/UDS matches whole frames and gives the clean error.
 - **Timing is ignored.**
 - **Read-only, always.** `dtc clear` and `adaptation set` are refused under `--replay` before they plan
   anything or take a backup, so a recording can never be mistaken for a real change.

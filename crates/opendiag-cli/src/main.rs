@@ -1061,6 +1061,12 @@ fn adaptation_set(
 
 /// How the connection was made, in words for the report; and whether it is simulated.
 fn describe_connection(t: &Target) -> (String, bool) {
+    if let Some(path) = &t.replay {
+        return (
+            format!("Replay of recorded session {}", path.display()),
+            false,
+        );
+    }
     if t.simulate {
         return ("Simulated: built-in virtual UDS ECU".into(), true);
     }
@@ -1125,7 +1131,13 @@ fn serve_cmd(target: &Target, listen_port: u16) -> Result<(), String> {
     // VAG connections are one module; the vehicle view makes both brands serve the same way.
     let vehicle = SingleModule::new(module, connection.clone());
     let module = VehicleModule::new(Box::new(vehicle), 0).map_err(|e| e.to_string())?;
-    serve_module(Box::new(module), connection, simulated, listen_port)
+    serve_module(
+        Box::new(module),
+        connection,
+        simulated,
+        target.replay.is_some(),
+        listen_port,
+    )
 }
 
 /// Serve any connected module read-only on localhost until stopped.
@@ -1133,6 +1145,7 @@ pub(crate) fn serve_module(
     module: Box<dyn Module>,
     connection: String,
     simulated: bool,
+    replay: bool,
     listen_port: u16,
 ) -> Result<(), String> {
     let mut module = module;
@@ -1150,6 +1163,7 @@ pub(crate) fn serve_module(
         version: env!("CARGO_PKG_VERSION").to_string(),
         connection,
         simulated,
+        replay,
         module: module_name,
     };
     let mut app = opendiag_web::App::new(module, load_data(), info, token.clone(), port);
@@ -1224,6 +1238,7 @@ fn report_cmd(target: &Target, out: Option<&Path>) -> Result<(), String> {
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
         connection,
         simulated,
+        replay: target.replay.is_some(),
         module: Some(module),
         ident,
         faults,

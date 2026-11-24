@@ -106,6 +106,8 @@ pub struct Info {
     pub connection: String,
     /// True for the built-in virtual modules: the page shows a banner.
     pub simulated: bool,
+    /// True when answers come from a recorded session: the page shows a banner.
+    pub replay: bool,
     pub module: String,
 }
 
@@ -144,6 +146,11 @@ impl App {
     /// Call periodically while idle. If the session cannot be kept alive, later API
     /// requests are refused instead of talking into a dead session.
     pub fn tick(&mut self) {
+        // A recording has no session to keep alive, and a keep-alive sent into it would
+        // only disturb where the replay is up to.
+        if self.info.replay {
+            return;
+        }
         if self.alive && self.module.keep_alive().is_err() {
             self.alive = false;
         }

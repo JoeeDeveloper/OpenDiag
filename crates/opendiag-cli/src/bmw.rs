@@ -248,7 +248,7 @@ fn serve_cmd(c: &Conn, listen_port: u16) -> Result<(), String> {
     let (v, _mock) = vehicle_of(s);
     let id = v.default_ecu();
     let module = VehicleModule::new(Box::new(v), id).map_err(|e| e.to_string())?;
-    crate::serve_module(Box::new(module), connection, simulated, listen_port)
+    crate::serve_module(Box::new(module), connection, simulated, false, listen_port)
 }
 
 fn parse_hex_u16(s: &str) -> Result<u16, String> {
