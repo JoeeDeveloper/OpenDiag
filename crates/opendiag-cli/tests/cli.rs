@@ -1660,3 +1660,99 @@ fn replay_cannot_be_combined_with_a_live_connection() {
     assert!(!ok);
     assert!(err.contains("cannot be used with"), "{err}");
 }
+
+// ---- serve --replay: the dashboard fed from a recording ----
+
+fn json_get(srv: &Server, path: &str) -> serde_json::Value {
+    let host = format!("127.0.0.1:{}", srv.port);
+    let (status, _, body) = http(srv.port, "GET", path, &host, Some(&srv.token));
+    assert_eq!(status, 200, "{path}: {body}");
+    serde_json::from_str(&body).expect("json")
+}
+
+/// The first cell's A*256+B for each of the logged rounds, from the CSV `log` writes.
+fn recorded_first_cells(csv: &str) -> Vec<u32> {
+    csv.lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(',').collect();
+            (f[2] == "1").then(|| f[4].parse::<u32>().unwrap() * 256 + f[5].parse::<u32>().unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn serve_replay_labels_itself_and_steps_through_the_recorded_readings() {
+    let trace = trace_path("serve-live");
+    let (ok, csv, err) = run(
+        &[
+            "log",
+            "--groups",
+            "1",
+            "--samples",
+            "3",
+            "--interval-ms",
+            "10",
+            "--simulate-kw1281",
+            "--trace",
+            &trace,
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    let recorded = recorded_first_cells(&csv);
+    assert_eq!(recorded.len(), 3);
+    assert!(
+        recorded[0] != recorded[1],
+        "the simulator's values must change"
+    );
+
+    let srv = start_server(&["--replay", &trace, "--slow-init"]);
+    let info = json_get(&srv, "/api/info");
+    assert_eq!(info["replay"], true);
+    assert_eq!(info["simulated"], false);
+    assert!(
+        info["connection"].as_str().unwrap().starts_with("Replay"),
+        "{info}"
+    );
+
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let live = json_get(&srv, "/api/live?groups=1");
+        let c = &live["groups"][0]["cells"][0];
+        seen.push(c["a"].as_u64().unwrap() as u32 * 256 + c["b"].as_u64().unwrap() as u32);
+    }
+    let _ = std::fs::remove_file(&trace);
+    assert_eq!(
+        seen, recorded,
+        "replay must play the readings back in recorded order"
+    );
+}
+
+#[test]
+fn serve_replay_stays_alive_while_idle_and_exposes_no_write() {
+    let trace = trace_path("serve-idle");
+    let (ok, _, err) = run(&["dtc", "read", "--simulate-kw1281", "--trace", &trace], "");
+    assert!(ok, "{err}");
+    let srv = start_server(&["--replay", &trace, "--slow-init"]);
+    // Longer than the server's 2 s idle keep-alive interval.
+    std::thread::sleep(std::time::Duration::from_millis(2600));
+    let dtcs = json_get(&srv, "/api/dtcs");
+    assert!(!dtcs.as_array().unwrap().is_empty(), "{dtcs}");
+    let host = format!("127.0.0.1:{}", srv.port);
+    let (status, _, _) = http(srv.port, "POST", "/api/dtcs", &host, Some(&srv.token));
+    let _ = std::fs::remove_file(&trace);
+    assert_eq!(status, 405);
+}
+
+#[test]
+fn a_replayed_report_says_so() {
+    let trace = trace_path("report");
+    let (ok, _, err) = run(&["report", "--simulate-kw1281", "--trace", &trace], "");
+    assert!(ok, "{err}");
+    let (ok, html, err) = run(&["report", "--replay", &trace, "--slow-init"], "");
+    let _ = std::fs::remove_file(&trace);
+    assert!(ok, "{err}");
+    assert!(html.contains("REPLAYED DATA"), "{html}");
+    assert!(!html.contains("SIMULATED DATA"), "{html}");
+}

@@ -36,8 +36,10 @@ async function loadInfo() {
   $("version").textContent = "v" + i.version;
   fillDl($("info"), [["Connection", i.connection], ["Module", i.module]]);
   const b = $("banner");
-  b.hidden = !i.simulated;
-  if (i.simulated) b.textContent = "SIMULATED: this is a built-in virtual module, not a car.";
+  b.hidden = !(i.simulated || i.replay);
+  if (i.replay) b.textContent = "REPLAY: this is a recorded session, not a car right now.";
+  else if (i.simulated) b.textContent = "SIMULATED: this is a built-in virtual module, not a car.";
+  $("replay-note").hidden = !i.replay;
   const id = await api("/api/ident");
   const rows = [];
   if (id.part_number) rows.push(["Part number", id.part_number]);
@@ -65,54 +67,90 @@ async function loadDtcs() {
   }
 }
 
-// Live data
+// Live data: one tile per measuring-block cell, each with its own scale.
 let timer = null;
-const history = new Map(); // "group.cell" -> [values]
+let busy = false;
 const MAX_POINTS = 120;
+const tiles = new Map(); // "group.cell" -> { values, formula, node parts }
+const samples = []; // every reading this session, for the CSV download
+let startedAt = 0;
 
-function drawChart() {
-  const svg = $("chart");
-  svg.replaceChildren();
-  const series = [...history.values()];
-  let max = 1;
-  for (const s of series) for (const v of s) max = Math.max(max, v);
-  for (const s of series) {
-    const pts = s.map((v, i) => {
-      const x = (i / (MAX_POINTS - 1)) * 600;
-      const y = 155 - (v / max) * 150;
-      return x.toFixed(1) + "," + y.toFixed(1);
-    });
-    const pl = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-    pl.setAttribute("points", pts.join(" "));
-    svg.append(pl);
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function makeTile(key, group, cell) {
+  const root = document.createElement("div");
+  root.className = "tile";
+  const name = el("div", "Group " + group + ", cell " + cell);
+  name.className = "name";
+  const value = el("div", "");
+  value.className = "value";
+  const range = el("div", "");
+  range.className = "range";
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 200 44");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Recent values of group " + group + " cell " + cell);
+  const line = document.createElementNS(SVG_NS, "polyline");
+  svg.append(line);
+  root.append(name, value, range, svg);
+  $("tiles").append(root);
+  const t = { values: [], name, value, range, line };
+  tiles.set(key, t);
+  return t;
+}
+
+function drawTile(t, formula) {
+  const vs = t.values;
+  const last = vs[vs.length - 1];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of vs) {
+    lo = Math.min(lo, v);
+    hi = Math.max(hi, v);
   }
-  svg.hidden = series.length === 0;
+  t.value.textContent = String(last);
+  t.range.textContent =
+    "formula 0x" + formula.toString(16).toUpperCase().padStart(2, "0") +
+    " \u00b7 min " + lo + " \u00b7 max " + hi;
+  const span = hi - lo || 1; // a flat series sits in the middle, not at the floor
+  const pts = vs.map((v, i) => {
+    const x = vs.length === 1 ? 0 : (i / (MAX_POINTS - 1)) * 200;
+    const y = hi === lo ? 22 : 40 - ((v - lo) / span) * 36;
+    return x.toFixed(1) + "," + y.toFixed(1);
+  });
+  t.line.setAttribute("points", pts.join(" "));
+}
+
+function setStatus(msg) {
+  $("live-status").textContent = msg;
 }
 
 async function pollLive() {
+  if (busy) return; // never queue requests behind a slow module
+  busy = true;
   try {
     const live = await api("/api/live?groups=" + encodeURIComponent($("groups").value));
     showError("");
-    const body = $("live").tBodies[0];
-    body.replaceChildren();
+    const ms = Date.now() - startedAt;
     for (const g of live.groups) {
       g.cells.forEach((c, n) => {
         const raw = c.a * 256 + c.b;
-        const key = g.group + "." + n;
-        const h = history.get(key) || [];
-        h.push(raw);
-        if (h.length > MAX_POINTS) h.shift();
-        history.set(key, h);
-        const tr = document.createElement("tr");
-        tr.append(el("td", String(g.group)), el("td", String(n + 1)), el("td", "0x" + c.formula.toString(16).toUpperCase().padStart(2, "0")), el("td", String(c.a)), el("td", String(c.b)), el("td", String(raw)));
-        body.append(tr);
+        const key = g.group + "." + (n + 1);
+        const t = tiles.get(key) || makeTile(key, g.group, n + 1);
+        t.values.push(raw);
+        if (t.values.length > MAX_POINTS) t.values.shift();
+        drawTile(t, c.formula);
+        samples.push([ms, g.group, n + 1, c.formula, c.a, c.b]);
       });
     }
-    $("live").hidden = false;
-    drawChart();
+    $("live-csv").disabled = samples.length === 0;
+    setStatus(samples.length + " reading(s)");
   } catch (e) {
     showError(e.message);
     stopLive();
+  } finally {
+    busy = false;
   }
 }
 
@@ -122,13 +160,43 @@ function stopLive() {
   $("live-toggle").textContent = "Start";
 }
 
-$("live-toggle").addEventListener("click", () => {
-  if (timer !== null) return stopLive();
-  history.clear();
-  $("live-toggle").textContent = "Stop";
+function startLive() {
+  if (samples.length === 0) startedAt = Date.now();
+  $("live-toggle").textContent = "Pause";
   pollLive();
-  timer = setInterval(pollLive, 1000);
+  timer = setInterval(pollLive, Number($("interval").value));
+}
+
+function clearLive() {
+  stopLive();
+  tiles.clear();
+  samples.length = 0;
+  $("tiles").replaceChildren();
+  $("live-csv").disabled = true;
+  setStatus("");
+}
+
+function downloadCsv() {
+  const rows = ["time_ms,group,cell,formula,a,b"].concat(samples.map((s) => s.join(",")));
+  const blob = new Blob([rows.join("\n") + "\n"], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "opendiag-live.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$("live-toggle").addEventListener("click", () => (timer !== null ? stopLive() : startLive()));
+$("live-clear").addEventListener("click", clearLive);
+$("live-csv").addEventListener("click", downloadCsv);
+$("interval").addEventListener("change", () => {
+  if (timer !== null) {
+    stopLive();
+    startLive();
+  }
 });
+// Different groups are different series: start fresh so tiles are not mixed up.
+$("groups").addEventListener("change", clearLive);
 $("refresh-dtcs").addEventListener("click", () => loadDtcs().catch((e) => showError(e.message)));
 
 loadInfo().then(loadDtcs).catch((e) => showError(e.message));

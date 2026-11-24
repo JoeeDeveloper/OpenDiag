@@ -30,16 +30,26 @@
       <tbody></tbody>
     </table>
   </section>
-  <section>
+  <section id="live-section">
     <h2>Live data</h2>
-    <p class="note">Raw measuring-block cells (formula, A, B). Values are not converted to units; the chart plots A&times;256+B.</p>
-    <label>Groups <input id="groups" value="1" size="12" inputmode="numeric" pattern="[0-9,]*"></label>
-    <button id="live-toggle" type="button">Start</button>
-    <table id="live" hidden>
-      <thead><tr><th>Group</th><th>Cell</th><th>Formula</th><th>A</th><th>B</th><th>Raw</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <svg id="chart" viewBox="0 0 600 160" role="img" aria-label="Live raw values" hidden></svg>
+    <p class="note">Raw measuring-block cells (formula, A, B), shown as A&times;256+B. Values are not converted to units.</p>
+    <p class="note" id="replay-note" hidden>Replay: a recording stands in for the car. Values repeat as recorded, so a recording of one reading looks flat, and a longer one loops when it runs out.</p>
+    <div class="controls">
+      <label>Groups <input id="groups" value="1" size="12" inputmode="numeric" pattern="[0-9,]*"></label>
+      <label>Every
+        <select id="interval">
+          <option value="500">0.5 s</option>
+          <option value="1000" selected>1 s</option>
+          <option value="2000">2 s</option>
+          <option value="5000">5 s</option>
+        </select>
+      </label>
+      <button id="live-toggle" type="button">Start</button>
+      <button id="live-clear" type="button">Clear</button>
+      <button id="live-csv" type="button" disabled>Download CSV</button>
+      <span id="live-status" class="note" role="status"></span>
+    </div>
+    <div id="tiles"></div>
   </section>
   <p class="note">Read-only. Clearing codes and changing adaptation are only possible from the command line, with a backup first.</p>
 </main>

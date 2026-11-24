@@ -23,6 +23,13 @@ from it. Every request goes through one pure function (`opendiag-web`), which en
 Requests are handled one at a time, so the diagnostic session is never used concurrently. When idle, the server
 sends keep-alive messages; if one fails, the API answers 503 until you restart.
 
+## Live data view
+
+Each measuring-block cell gets its own tile: the latest raw value (A×256+B), its min and max over the visible
+window, and a sparkline on its own scale. Controls: start/pause, clear, sample interval (0.5 to 5 s), and a CSV
+download of everything read this session (`time_ms,group,cell,formula,a,b`, the same columns as `opendiag log`).
+Under `--replay` the page says so and plays the recording back ([replay.md](replay.md)).
+
 ## Limits
 
 - Live data is KW1281 only, as raw cells (formula, A, B). Values are not converted to units, and the chart plots
