@@ -1542,7 +1542,18 @@ fn assert_replay_matches(cmd: &[&str], sim_flag: &str, replay_flags: &[&str], na
     let _ = std::fs::remove_file(&trace);
     assert!(ok, "replay failed: {err}");
     assert!(err.contains("[replay]"), "{err}");
-    assert_eq!(live, replayed);
+    // A log's time_ms column is the real clock, which differs run to run on a busy machine.
+    assert_eq!(without_time_column(&live), without_time_column(&replayed));
+}
+
+fn without_time_column(out: &str) -> String {
+    if !out.starts_with("time_ms,") {
+        return out.to_string();
+    }
+    out.lines()
+        .map(|l| l.split_once(',').map_or(l, |(_, rest)| rest))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
