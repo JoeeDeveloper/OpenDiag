@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::{Args, Parser, Subcommand};
 use opendiag_core::Error;
 use opendiag_data::{json_schema_pretty, load_dir, DataSet};
-use opendiag_proto::clock::SystemClock;
+use opendiag_proto::clock::{FakeClock, SystemClock};
 use opendiag_proto::isotp::{Config as IsoTpConfig, IsoTpLink};
 use opendiag_proto::kw1281::{Kw1281Client, Kw1281Config};
 use opendiag_proto::kwp::{KwpClient, KwpConfig, KwpService};
@@ -25,7 +25,7 @@ use opendiag_services::{
 };
 use opendiag_transport::{
     list_serial_ports, open_can, Elm327, Elm327Emulator, Elm327Serial, KLineSerial, SerialIo,
-    TraceStatus, Tracing, Transport,
+    TraceEcu, TraceStatus, Tracing, Transport,
 };
 
 /// Which vehicle family a command talks to.
@@ -303,6 +303,14 @@ struct Target {
     /// Record every byte sent and received to this file (see docs/capture.md).
     #[arg(long)]
     trace: Option<PathBuf>,
+    /// Run against a recorded trace instead of a vehicle (read-only, no hardware). Add
+    /// --slow-init for a KW1281 recording or --fast-init for KWP2000; otherwise it is UDS.
+    /// Only what was recorded can be answered; see docs/replay.md.
+    #[arg(
+        long,
+        conflicts_with_all = ["simulate", "simulate_kw1281", "simulate_kwp", "simulate_elm327", "port", "can", "elm327", "trace"]
+    )]
+    replay: Option<PathBuf>,
     /// UDS over CAN through an ELM327-style adapter on this serial port, e.g. COM4.
     /// Degraded: 11-bit ids only, slow, many clones are flaky. Read docs/elm327.md.
     #[arg(long)]
@@ -804,6 +812,49 @@ fn elm327_session<P: SerialIo + 'static>(
     })
 }
 
+/// A recorded session standing in for the vehicle. Always read-only: see `connect_for_write`.
+fn connect_replay(path: &Path, target: &Target) -> Result<Connection, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let ecu = TraceEcu::from_text(&text).map_err(|e| e.to_string())?;
+    eprintln!(
+        "[replay] {} (recorded answers only; read-only, no hardware)",
+        path.display()
+    );
+    let transport: Box<dyn Transport> = Box::new(ecu);
+    let module: Box<dyn Module> = if target.slow_init {
+        let cfg = Kw1281Config {
+            echo: !target.no_echo,
+            ..Kw1281Config::default()
+        };
+        let client = Kw1281Client::new(transport, FakeClock::new(), cfg);
+        Box::new(Kw1281Module::connect(client, target.address).map_err(|e| e.to_string())?)
+    } else if target.fast_init {
+        let mut kwp = KwpClient::new(transport, KwpConfig::new(target.address));
+        kwp.start_communication().map_err(|e| e.to_string())?;
+        Box::new(KwpModule::start(kwp, target.address, "kwp2000").map_err(|e| e.to_string())?)
+    } else {
+        uds_module(transport, target.tester_id, target.ecu_id)
+    };
+    Ok(Connection {
+        module,
+        _trace: None,
+    })
+}
+
+/// Like `connect`, for commands that change the vehicle. A replay is never writable: nothing
+/// is sent anywhere, so a "successful" write would only look like one.
+fn connect_for_write(target: &Target) -> Result<Connection, String> {
+    if target.replay.is_some() {
+        return Err(
+            "--replay is read-only: writes are refused so a recording can never be \
+                    mistaken for a real change"
+                .into(),
+        );
+    }
+    connect(target)
+}
+
 fn connect_tp20(iface: &str, target: &Target) -> Result<Connection, String> {
     let can = open_can(iface).map_err(|e| e.to_string())?;
     let (transport, report) = trace_transport(can, target.trace.as_deref())?;
@@ -829,6 +880,9 @@ fn connect_tp20(iface: &str, target: &Target) -> Result<Connection, String> {
 /// Open whichever module the flags select: a virtual module, KW1281 (`--slow-init`),
 /// KWP2000 on K-line (`--fast-init`), or KWP2000 over TP2.0 on CAN (`--can`).
 fn connect(target: &Target) -> Result<Connection, String> {
+    if let Some(path) = &target.replay {
+        return connect_replay(path, target);
+    }
     let trace = target.trace.as_deref();
     if target.simulate {
         eprintln!("[simulated] virtual UDS ECU, tester id {TESTER_ID:#05X}");
@@ -973,7 +1027,7 @@ fn adaptation_set(
     store: &StoreArg,
 ) -> Result<(), String> {
     let store = backup_store(store);
-    let mut conn = connect(target)?;
+    let mut conn = connect_for_write(target)?;
     let access = conn.module.adaptation().ok_or(NO_ADAPTATION)?;
     let change = plan_change(access, channel, value).map_err(|e| e.to_string())?;
     if change.old == change.new {
@@ -1418,7 +1472,7 @@ fn dtc_read(target: &Target) -> Result<(), String> {
 
 fn dtc_clear(target: &Target, store: &StoreArg) -> Result<(), String> {
     let store = backup_store(store);
-    let mut conn = connect(target)?;
+    let mut conn = connect_for_write(target)?;
     let data = load_data();
     let access = conn.module.faults();
     let shown = plan_clear(access).map_err(|e| e.to_string())?;

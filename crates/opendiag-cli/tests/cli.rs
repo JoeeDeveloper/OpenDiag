@@ -1514,3 +1514,149 @@ fn bmw_coding_refuses_unknown_values_fields_and_blocks_without_writing() {
     assert!(!ok && err.contains("no definition"), "{err}");
     assert!(!backups.exists(), "nothing may be backed up or written");
 }
+
+// ---- replay: a recorded session standing in for the vehicle (no hardware) ----
+
+fn trace_path(name: &str) -> String {
+    std::env::temp_dir()
+        .join(format!(
+            "opendiag-replay-{}-{name}.trace",
+            std::process::id()
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Record `cmd` against the simulator, then run it again from the recording; the output must match.
+fn assert_replay_matches(cmd: &[&str], sim_flag: &str, replay_flags: &[&str], name: &str) {
+    let trace = trace_path(name);
+    let mut rec: Vec<&str> = cmd.to_vec();
+    rec.extend([sim_flag, "--trace", &trace]);
+    let (ok, live, err) = run(&rec, "");
+    assert!(ok, "record failed: {err}");
+
+    let mut rep: Vec<&str> = cmd.to_vec();
+    rep.extend(["--replay", &trace]);
+    rep.extend(replay_flags);
+    let (ok, replayed, err) = run(&rep, "");
+    let _ = std::fs::remove_file(&trace);
+    assert!(ok, "replay failed: {err}");
+    assert!(err.contains("[replay]"), "{err}");
+    // A log's time_ms column is the real clock, which differs run to run on a busy machine.
+    assert_eq!(without_time_column(&live), without_time_column(&replayed));
+}
+
+fn without_time_column(out: &str) -> String {
+    if !out.starts_with("time_ms,") {
+        return out.to_string();
+    }
+    out.lines()
+        .map(|l| l.split_once(',').map_or(l, |(_, rest)| rest))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn replay_reproduces_scan_and_dtc_read_for_every_protocol() {
+    assert_replay_matches(&["scan"], "--simulate", &[], "uds-scan");
+    assert_replay_matches(&["dtc", "read"], "--simulate", &[], "uds-dtc");
+    assert_replay_matches(&["scan"], "--simulate-kw1281", &["--slow-init"], "kw-scan");
+    assert_replay_matches(
+        &["dtc", "read"],
+        "--simulate-kw1281",
+        &["--slow-init"],
+        "kw-dtc",
+    );
+    assert_replay_matches(&["scan"], "--simulate-kwp", &["--fast-init"], "kwp-scan");
+    assert_replay_matches(
+        &["dtc", "read"],
+        "--simulate-kwp",
+        &["--fast-init"],
+        "kwp-dtc",
+    );
+}
+
+#[test]
+fn replay_reproduces_a_live_data_log() {
+    assert_replay_matches(
+        &[
+            "log",
+            "--groups",
+            "1",
+            "--samples",
+            "2",
+            "--interval-ms",
+            "10",
+        ],
+        "--simulate-kw1281",
+        &["--slow-init"],
+        "kw-log",
+    );
+}
+
+#[test]
+fn replay_can_be_asked_the_same_thing_twice() {
+    let trace = trace_path("twice");
+    let (ok, _, err) = run(&["dtc", "read", "--simulate-kw1281", "--trace", &trace], "");
+    assert!(ok, "{err}");
+    for _ in 0..2 {
+        let (ok, out, err) = run(&["dtc", "read", "--replay", &trace, "--slow-init"], "");
+        assert!(ok, "{err}");
+        assert!(out.contains("00525"), "{out}");
+    }
+    let _ = std::fs::remove_file(&trace);
+}
+
+#[test]
+fn replay_names_a_request_that_was_never_recorded() {
+    let trace = trace_path("missing");
+    let (ok, _, err) = run(&["scan", "--simulate", "--trace", &trace], "");
+    assert!(ok, "{err}");
+    let (ok, _, err) = run(&["dtc", "read", "--replay", &trace], "");
+    let _ = std::fs::remove_file(&trace);
+    assert!(!ok);
+    assert!(err.contains("not in recording"), "{err}");
+    assert!(err.contains("TX can 7E0#"), "{err}");
+}
+
+#[test]
+fn replay_refuses_every_write_before_anything_is_planned() {
+    let trace = trace_path("writes");
+    let (ok, _, err) = run(&["dtc", "read", "--simulate-kw1281", "--trace", &trace], "");
+    assert!(ok, "{err}");
+    let backup = trace_path("writes-backup");
+    let writes: [&[&str]; 2] = [
+        &["dtc", "clear", "--backup-file", &backup],
+        &[
+            "adaptation",
+            "set",
+            "--channel",
+            "4",
+            "--value",
+            "1",
+            "--workshop-code",
+            "1",
+            "--backup-file",
+            &backup,
+        ],
+    ];
+    for w in writes {
+        let mut args: Vec<&str> = w.to_vec();
+        args.extend(["--replay", &trace, "--slow-init"]);
+        let (ok, out, err) = run(&args, "y\ny\n");
+        assert!(!ok, "{args:?} must fail, got {out}");
+        assert!(err.contains("read-only"), "{args:?}: {err}");
+    }
+    assert!(
+        !std::path::Path::new(&backup).exists(),
+        "a refused write must not even take a backup"
+    );
+    let _ = std::fs::remove_file(&trace);
+}
+
+#[test]
+fn replay_cannot_be_combined_with_a_live_connection() {
+    let (ok, _, err) = run(&["scan", "--replay", "x.trace", "--simulate"], "");
+    assert!(!ok);
+    assert!(err.contains("cannot be used with"), "{err}");
+}
