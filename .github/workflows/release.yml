@@ -20,7 +20,7 @@ jobs:
     name: Tag matches Cargo version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Compare tag and workspace version
         env:
           REF_TYPE: ${{ github.ref_type }}
@@ -52,7 +52,7 @@ jobs:
           # Cross-built on an Apple Silicon runner; smoke-tested under Rosetta on a best-effort basis.
           - { os: macos-latest, target: x86_64-apple-darwin, bin: opendiag, archive: tar.gz, native: false }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
