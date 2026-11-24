@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a feature or improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Public sources for any protocol or data involved
+      description: Specs, open source projects or your own captures. Proprietary datasets (Ross-Tech labels, ODIS, BMW PSdZData) cannot be used.
+  - type: markdown
+    attributes:
+      value: |
+        Out of scope: flashing or ECU reprogramming, and anything that bypasses immobiliser, odometer or tuning protection.
