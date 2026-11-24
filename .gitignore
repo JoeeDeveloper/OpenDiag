@@ -3,3 +3,4 @@ Cargo.lock.bak
 node_modules/
 *.log
 .env
+/builds/

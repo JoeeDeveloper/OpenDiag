@@ -8,10 +8,8 @@
 use std::time::Duration;
 
 use opendiag_core::{Error, Result, WriteMode};
-use opendiag_transport::Transport;
 
-use crate::clock::Clock;
-use crate::isotp::IsoTpLink;
+use crate::link::MessageLink;
 
 // Service identifiers (ISO 14229-1).
 pub const SID_SESSION_CONTROL: u8 = 0x10;
@@ -103,8 +101,8 @@ pub enum RoutineAction {
     RequestResults = 0x03,
 }
 
-pub struct UdsClient<T: Transport, C: Clock> {
-    link: IsoTpLink<T, C>,
+pub struct UdsClient<L: MessageLink> {
+    link: L,
     cfg: UdsConfig,
     write_mode: WriteMode,
 }
@@ -113,9 +111,9 @@ fn protocol(msg: impl Into<String>) -> Error {
     Error::Protocol(format!("uds: {}", msg.into()))
 }
 
-impl<T: Transport, C: Clock> UdsClient<T, C> {
+impl<L: MessageLink> UdsClient<L> {
     /// New client, read-only by default.
-    pub fn new(link: IsoTpLink<T, C>, cfg: UdsConfig) -> Self {
+    pub fn new(link: L, cfg: UdsConfig) -> Self {
         Self {
             link,
             cfg,
@@ -131,7 +129,7 @@ impl<T: Transport, C: Clock> UdsClient<T, C> {
         self.write_mode = mode;
     }
 
-    pub fn link(&self) -> &IsoTpLink<T, C> {
+    pub fn link(&self) -> &L {
         &self.link
     }
 

@@ -43,12 +43,12 @@ fn reply(payload: &[u8]) -> Vec<Frame> {
     out
 }
 
-fn client(sim: Simulator) -> UdsClient<Simulator, FakeClock> {
+fn client(sim: Simulator) -> UdsClient<IsoTpLink<Simulator, FakeClock>> {
     let link = IsoTpLink::new(sim, FakeClock::new(), TESTER, ECU, Config::default());
     UdsClient::new(link, UdsConfig::default())
 }
 
-fn unlocked(sim: Simulator) -> UdsClient<Simulator, FakeClock> {
+fn unlocked(sim: Simulator) -> UdsClient<IsoTpLink<Simulator, FakeClock>> {
     let mut c = client(sim);
     c.set_write_mode(WriteMode::Unlocked);
     c

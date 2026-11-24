@@ -133,7 +133,7 @@ pub fn virtual_ecu_bus() -> Simulator {
 }
 
 /// UDS client type used with the virtual ECU.
-pub type VirtualClient = UdsClient<Simulator, FakeClock>;
+pub type VirtualClient = UdsClient<IsoTpLink<Simulator, FakeClock>>;
 
 /// A UDS client wired to the virtual ECU. Read-only until a service unlocks it.
 pub fn virtual_uds_client() -> VirtualClient {
@@ -141,7 +141,7 @@ pub fn virtual_uds_client() -> VirtualClient {
 }
 
 /// The same client over any transport carrying the virtual ECU's traffic.
-pub fn virtual_uds_client_over<T: Transport>(transport: T) -> UdsClient<T, FakeClock> {
+pub fn virtual_uds_client_over<T: Transport>(transport: T) -> UdsClient<IsoTpLink<T, FakeClock>> {
     let link = IsoTpLink::new(
         transport,
         FakeClock::new(),

@@ -6,7 +6,7 @@ use opendiag_services::demo::{virtual_uds_client, ECU_ID, TESTER_ID};
 use opendiag_services::{identify, read_dtcs};
 use opendiag_transport::{Frame, Simulator};
 
-fn client(sim: Simulator) -> UdsClient<Simulator, FakeClock> {
+fn client(sim: Simulator) -> UdsClient<IsoTpLink<Simulator, FakeClock>> {
     let link = IsoTpLink::new(sim, FakeClock::new(), TESTER_ID, ECU_ID, Config::default());
     UdsClient::new(link, UdsConfig::default())
 }
@@ -63,4 +63,44 @@ fn reads_and_formats_dtcs() {
     assert_eq!(dtcs[0].text, "P0171-00");
     assert_eq!(dtcs[0].flags, vec!["testFailed", "confirmed"]);
     assert_eq!(dtcs[1].text, "P0300-00");
+}
+
+mod vehicle_view {
+    use opendiag_services::demo::virtual_kw1281_module;
+    use opendiag_services::{Brand, SingleModule, Vehicle, VehicleModule};
+
+    fn single() -> SingleModule {
+        SingleModule::new(
+            Box::new(virtual_kw1281_module().unwrap()),
+            "virtual KW1281".into(),
+        )
+    }
+
+    #[test]
+    fn a_single_module_is_a_one_ecu_vehicle() {
+        let mut v = single();
+        assert_eq!(v.brand(), Brand::Vag);
+        assert_eq!(v.default_ecu(), 0);
+        let scan = v.scan().unwrap();
+        assert_eq!(scan.len(), 1);
+        assert!(scan[0].dtc_count.is_some());
+        assert!(v.identify().unwrap().lines.iter().all(|l| l.verified));
+        assert!(v.ecu(0).is_ok());
+        assert!(v.ecu(1).is_err(), "there is only one module");
+    }
+
+    #[test]
+    fn a_vehicle_module_forwards_everything_including_optional_abilities() {
+        use opendiag_services::Module;
+        assert!(VehicleModule::new(Box::new(single()), 1).is_err());
+        let mut m = VehicleModule::new(Box::new(single()), 0).unwrap();
+        assert!(m.identify().is_ok());
+        assert!(m.read_dtcs().is_ok());
+        assert!(m.live().is_some(), "KW1281 live data must stay reachable");
+        assert!(
+            m.adaptation().is_some(),
+            "KW1281 adaptation must stay reachable"
+        );
+        m.keep_alive().unwrap();
+    }
 }

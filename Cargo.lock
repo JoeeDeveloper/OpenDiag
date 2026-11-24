@@ -363,11 +363,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "opendiag-bmw"
+version = "0.1.0"
+dependencies = [
+ "opendiag-core",
+ "opendiag-proto",
+ "opendiag-services",
+]
+
+[[package]]
+name = "opendiag-bmw-coding"
+version = "0.1.0"
+dependencies = [
+ "opendiag-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "opendiag-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
  "getrandom",
+ "opendiag-bmw",
+ "opendiag-bmw-coding",
  "opendiag-core",
  "opendiag-data",
  "opendiag-proto",
@@ -404,6 +424,7 @@ dependencies = [
 name = "opendiag-services"
 version = "0.1.0"
 dependencies = [
+ "opendiag-bmw",
  "opendiag-core",
  "opendiag-proto",
  "opendiag-transport",

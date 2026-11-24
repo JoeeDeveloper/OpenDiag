@@ -5,28 +5,37 @@
 
 pub mod adaptation;
 pub mod backup;
+pub mod block;
 pub mod demo;
 pub mod fault_clear;
 mod kw1281_module;
 mod kwp_module;
 pub mod live;
 pub mod report;
+pub mod vehicle;
 
 pub use adaptation::{
     apply_change, apply_restore, plan_change, plan_restore, AdaptationAccess, Applied, Change,
     WriteConfirmation, WriteToken,
 };
 pub use backup::{BackupRecord, BackupStatus, BackupStore};
+pub use block::{
+    apply_block_change, plan_block_change, plan_block_restore, unhex, BlockAccess, BlockApplied,
+    BlockChange, BlockConfirmation,
+};
 pub use fault_clear::{apply_clear, plan_clear, ClearConfirmation, ClearOutcome, FaultAccess};
 pub use kw1281_module::Kw1281Module;
 pub use kwp_module::KwpModule;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
 pub use report::{escape_html, format_unix_utc, render_html, Report, ReportFault};
+pub use vehicle::{
+    Brand, EcuEntry, EcuId, IdentLine, SingleModule, Vehicle, VehicleIdent, VehicleModule,
+};
 
 use opendiag_core::{Error, Result, WriteMode};
+use opendiag_proto::link::MessageLink;
+use opendiag_proto::uds::Dtc;
 use opendiag_proto::uds::UdsClient;
-use opendiag_proto::{clock::Clock, uds::Dtc};
-use opendiag_transport::Transport;
 
 /// Standard UDS identification DIDs (ISO 14229 Annex C).
 const DID_PART_NUMBER: u16 = 0xF187;
@@ -96,7 +105,7 @@ pub fn status_flags(status: u8) -> Vec<&'static str> {
         .collect()
 }
 
-fn text_did<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>, did: u16) -> Result<Option<String>> {
+fn text_did<L: MessageLink>(uds: &mut UdsClient<L>, did: u16) -> Result<Option<String>> {
     match uds.read_data_by_identifier(did) {
         Ok(data) => {
             let s = String::from_utf8_lossy(&data);
@@ -112,7 +121,7 @@ fn text_did<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>, did: u16) -> Resu
 }
 
 /// Read the standard identification items from a module.
-pub fn identify<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>) -> Result<Ident> {
+pub fn identify<L: MessageLink>(uds: &mut UdsClient<L>) -> Result<Ident> {
     Ok(Ident {
         part_number: text_did(uds, DID_PART_NUMBER)?,
         software_version: text_did(uds, DID_SOFTWARE_VERSION)?,
@@ -146,7 +155,7 @@ pub trait Module {
     }
 }
 
-impl<T: Transport, C: Clock> Module for UdsClient<T, C> {
+impl<L: MessageLink> Module for UdsClient<L> {
     fn identify(&mut self) -> Result<Ident> {
         identify(self)
     }
@@ -164,7 +173,7 @@ impl<T: Transport, C: Clock> Module for UdsClient<T, C> {
     }
 }
 
-impl<T: Transport, C: Clock> FaultAccess for UdsClient<T, C> {
+impl<L: MessageLink> FaultAccess for UdsClient<L> {
     fn protocol(&self) -> &'static str {
         "uds"
     }
@@ -174,7 +183,7 @@ impl<T: Transport, C: Clock> FaultAccess for UdsClient<T, C> {
     }
 
     fn describe(&self) -> String {
-        format!("UDS ECU (request id {:#05X})", self.link().tx_id())
+        self.link().describe()
     }
 
     fn read(&mut self) -> Result<Vec<DtcReport>> {
@@ -191,7 +200,7 @@ impl<T: Transport, C: Clock> FaultAccess for UdsClient<T, C> {
 }
 
 /// Read every stored DTC (status mask 0xFF).
-pub fn read_dtcs<T: Transport, C: Clock>(uds: &mut UdsClient<T, C>) -> Result<Vec<DtcReport>> {
+pub fn read_dtcs<L: MessageLink>(uds: &mut UdsClient<L>) -> Result<Vec<DtcReport>> {
     Ok(uds
         .read_dtcs_by_status_mask(0xFF)?
         .into_iter()

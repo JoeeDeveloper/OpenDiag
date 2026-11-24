@@ -103,6 +103,10 @@ Key design points:
 - Packaging: Windows installer, AppImage/deb, Homebrew. Signed releases.
 - Optional: ESP32/STM32 firmware adapter, headless "diag server" on a Pi/homelab with web UI.
 
+### Phase B - BMW F-series over ENET (branch `feat/bmw-backend`)
+
+Status: steps 1-3 done and **simulator-tested only**. New crate `opendiag-bmw`: HSFZ framing, TCP gateway session, UDP discovery, VIN / I-level / FA reads, mock gateway, `opendiag bmw` CLI. UDS now runs over a `MessageLink` trait so HSFZ reuses the VAG-proven client. Step 2 added: ECU scan, BMW hex DTC read and guarded clear (in `write_safety.rs`), raw DID live logging, a small unverified ECU address table. Step 3 added: guarded raw block write/restore (`opendiag-services::block`, backup-first, read-back verify, in `write_safety.rs`; DID supplied by the user). Also done: `--brand vag|bmw|auto` router with `serve` for BMW, and `opendiag-bmw-coding` (our own definition format, decode/encode by field name). Next: see the design for the real-file decode, `Vehicle` and the launcher in [docs/design-bmw-coding-and-launcher.md](docs/design-bmw-coding-and-launcher.md) (design only). See [docs/bmw.md](docs/bmw.md).
+
 ## 5. Repo layout
 
 ```

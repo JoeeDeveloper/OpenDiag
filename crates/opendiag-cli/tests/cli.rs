@@ -1160,3 +1160,357 @@ fn doctor_prints_a_summary_and_writes_it_to_a_file_without_a_vin() {
     // The summary is for sharing: it must not contain identification from modules.
     assert!(!stdout.contains("DEMO-KW-0001") && !stdout.contains("VIRTUAL ENGINE ECU"));
 }
+
+#[test]
+fn bmw_simulated_discovery_lists_the_virtual_car() {
+    let (ok, out, err) = run(&["bmw", "discover", "--simulate", "--wait-ms", "400"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("WBASIMULATED00001"), "{out}");
+    assert!(out.contains("0x10"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_ident_reads_vin_and_flags_unverified_items() {
+    let (ok, out, err) = run(&["bmw", "ident", "--simulate"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("WBASIMULATED00001"), "{out}");
+    assert!(out.contains("F020-00-00-000"), "{out}");
+    assert!(out.contains("unverified"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_did_read_and_missing_did() {
+    let (ok, out, _) = run(
+        &["bmw", "did", "--simulate", "--target", "0x12", "0xF190"],
+        "",
+    );
+    assert!(ok);
+    assert!(out.contains("57 42 41"), "{out}");
+    let (ok, out, _) = run(&["bmw", "did", "--simulate", "0xABCD"], "");
+    assert!(ok);
+    assert!(out.contains("does not have DID"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_scan_lists_the_ecus_with_code_counts() {
+    let (ok, out, err) = run(&["bmw", "scan", "--simulate"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("4 ECU(s) answered"), "{out}");
+    assert!(
+        out.contains("0x12") && out.contains("2 fault code(s)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("0x60") && out.contains("1 fault code(s)"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("0x29"),
+        "an ECU the car lacks must not be listed: {out}"
+    );
+    let (ok, out, err) = run(&["bmw", "scan", "--simulate", "--all"], "");
+    assert!(ok, "{err}");
+    assert!(out.contains("4 ECU(s) answered"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_dtc_read_shows_raw_hex_codes() {
+    let (ok, out, err) = run(
+        &["bmw", "dtc", "read", "--simulate", "--target", "0x12"],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("480A12") && out.contains("480B01"), "{out}");
+    assert!(out.contains("confirmed"), "{out}");
+}
+
+#[test]
+fn bmw_simulated_clear_needs_yes_snapshots_and_verifies() {
+    let backups = temp_file("bmw-clear.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let args = [
+        "bmw",
+        "dtc",
+        "clear",
+        "--simulate",
+        "--target",
+        "0x12",
+        "--backup-file",
+        b,
+    ];
+    // Anything but YES: nothing changes and no snapshot is written.
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(ok);
+    assert!(out.contains("Cancelled"), "{out}");
+    assert!(!backups.exists());
+    // YES: snapshot first, then the clear, then the re-read.
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("Cleared 2 fault code(s)"), "{out}");
+    assert!(out.contains("now reports no fault codes"), "{out}");
+    let text = std::fs::read_to_string(&backups).unwrap();
+    assert!(
+        text.contains("480A12") && text.contains("\"status\":\"verified\""),
+        "{text}"
+    );
+    let _ = std::fs::remove_file(&backups);
+}
+
+#[test]
+fn bmw_clear_has_no_yes_flag() {
+    let (ok, _, err) = run(&["bmw", "dtc", "clear", "--simulate", "--yes"], "");
+    assert!(!ok);
+    assert!(err.contains("--yes"), "{err}");
+}
+
+#[test]
+fn bmw_simulated_live_logs_raw_csv() {
+    let (ok, out, err) = run(
+        &[
+            "bmw",
+            "live",
+            "--simulate",
+            "--target",
+            "0x12",
+            "--did",
+            "0x4002,0xBEEF",
+            "--interval-ms",
+            "10",
+            "--samples",
+            "2",
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.starts_with("time_ms,did,status,hex"), "{out}");
+    assert!(out.contains("0x4002,ok,0BB8"), "{out}");
+    assert!(out.contains("0xBEEF,absent,"), "{out}");
+    assert_eq!(out.lines().count(), 5, "{out}");
+}
+
+fn bmw_block_args<'a>(sub: &'a [&'a str], backups: &'a str) -> Vec<&'a str> {
+    let mut v = vec!["bmw", "block"];
+    v.extend_from_slice(sub);
+    v.extend_from_slice(&["--simulate", "--target", "0x12", "--backup-file", backups]);
+    v
+}
+
+#[test]
+fn bmw_block_read_and_guarded_write_in_the_simulator() {
+    let backups = temp_file("bmw-block.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let (ok, out, err) = run(
+        &[
+            "bmw",
+            "block",
+            "read",
+            "--simulate",
+            "--target",
+            "0x12",
+            "--did",
+            "0x2000",
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("0102030405060708"), "{out}");
+
+    let args = bmw_block_args(
+        &["write", "--did", "0x2000", "--hex", "010203AA05060708"],
+        b,
+    );
+    // Not YES: nothing written, no backup.
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(ok);
+    assert!(out.contains("Cancelled"), "{out}");
+    assert!(out.contains("offset(s) [3]"), "{out}");
+    assert!(!backups.exists());
+    // YES: backed up, written, verified.
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("verified by reading it back"), "{out}");
+    let text = std::fs::read_to_string(&backups).unwrap();
+    assert!(text.contains("\"old_hex\":\"0102030405060708\""), "{text}");
+    // The backup list shows it with the undo hint.
+    let (ok, out, _) = run(&["backup", "list", "--backup-file", b], "");
+    assert!(ok);
+    assert!(
+        out.contains("0x2000") && out.contains("bmw block restore"),
+        "{out}"
+    );
+    let _ = std::fs::remove_file(&backups);
+}
+
+#[test]
+fn bmw_block_write_refuses_identity_data_wrong_length_and_has_no_yes_flag() {
+    let backups = temp_file("bmw-block-refused.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0xF190", "--hex", "00"], b),
+        "YES\n",
+    );
+    assert!(!ok);
+    assert!(err.contains("identification"), "{err}");
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0x2000", "--hex", "0102"], b),
+        "YES\n",
+    );
+    assert!(!ok);
+    assert!(err.contains("length must not change"), "{err}");
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0x2000", "--hex", "zz"], b),
+        "YES\n",
+    );
+    assert!(!ok && err.contains("hex"), "{err}");
+    let (ok, _, err) = run(
+        &bmw_block_args(&["write", "--did", "0x2000", "--hex", "00", "--yes"], b),
+        "",
+    );
+    assert!(!ok && err.contains("--yes"), "{err}");
+    assert!(!backups.exists());
+}
+
+#[test]
+fn serve_brand_bmw_serves_the_simulated_bmw_read_only() {
+    let srv = start_server(&["--brand", "bmw", "--simulate"]);
+    let host = format!("127.0.0.1:{}", srv.port);
+    let (status, _, body) = http(srv.port, "GET", "/api/info", &host, Some(&srv.token));
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("\"simulated\":true") && body.contains("BMW"),
+        "{body}"
+    );
+    let (status, _, body) = http(srv.port, "GET", "/api/ident", &host, Some(&srv.token));
+    assert_eq!(status, 200);
+    assert!(body.contains("WBASIMULATED00001"), "{body}");
+    let (status, _, _) = http(srv.port, "POST", "/api/dtc", &host, Some(&srv.token));
+    assert_ne!(status, 200, "serve must stay read-only");
+}
+
+#[test]
+fn bmw_serve_command_works_directly_and_brand_flag_does_not_change_vag() {
+    // `--brand vag` leaves a VAG command working as before.
+    let (ok, out, err) = run(&["--brand", "vag", "scan", "--simulate"], "");
+    assert!(ok, "{err}");
+    assert!(!out.is_empty());
+    let (ok, _, err) = run(&["--brand", "bmw", "scan", "--simulate"], "");
+    assert!(!ok);
+    assert!(err.contains("opendiag bmw scan"), "{err}");
+}
+
+fn coding_example() -> String {
+    format!(
+        "{}/../../docs/examples/bmw-coding-synthetic.json",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn bmw_coding_show_names_the_fields() {
+    let f = coding_example();
+    let (ok, out, err) = run(
+        &[
+            "bmw",
+            "coding",
+            "show",
+            "--simulate",
+            "--target",
+            "0x12",
+            "--did",
+            "0x2000",
+            "--coding-file",
+            &f,
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("Synthetic example"),
+        "provenance must be shown: {err}"
+    );
+    assert!(out.contains("demo_mode") && out.contains("eco"), "{out}");
+    assert!(
+        out.contains("demo_limit") && out.contains("no label"),
+        "{out}"
+    );
+}
+
+#[test]
+fn bmw_coding_set_goes_through_the_guarded_flow() {
+    let f = coding_example();
+    let backups = temp_file("bmw-coding.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let args = [
+        "bmw",
+        "coding",
+        "set",
+        "--simulate",
+        "--target",
+        "0x12",
+        "--did",
+        "0x2000",
+        "--coding-file",
+        &f,
+        "--field",
+        "demo_mode",
+        "--value",
+        "sport",
+        "--backup-file",
+        b,
+    ];
+    let (ok, out, _) = run(&args, "no\n");
+    assert!(ok);
+    assert!(out.contains("Field demo_mode: eco -> sport"), "{out}");
+    assert!(out.contains("Cancelled") && !backups.exists(), "{out}");
+    let (ok, out, err) = run(&args, "YES\n");
+    assert!(ok, "{err}");
+    assert!(out.contains("verified by reading it back"), "{out}");
+    let text = std::fs::read_to_string(&backups).unwrap();
+    assert!(
+        text.contains("\"old_hex\":\"0102030405060708\"")
+            && text.contains("\"new_hex\":\"0202030405060708\""),
+        "{text}"
+    );
+    let _ = std::fs::remove_file(&backups);
+}
+
+#[test]
+fn bmw_coding_refuses_unknown_values_fields_and_blocks_without_writing() {
+    let f = coding_example();
+    let backups = temp_file("bmw-coding-bad.jsonl");
+    let _ = std::fs::remove_file(&backups);
+    let b = backups.to_str().unwrap();
+    let base = |field: &'static str, value: &'static str, did: &'static str| {
+        run(
+            &[
+                "bmw",
+                "coding",
+                "set",
+                "--simulate",
+                "--target",
+                "0x12",
+                "--did",
+                did,
+                "--coding-file",
+                &f,
+                "--field",
+                field,
+                "--value",
+                value,
+                "--backup-file",
+                b,
+            ],
+            "YES\n",
+        )
+    };
+    assert!(!base("demo_mode", "turbo", "0x2000").0);
+    assert!(!base("demo_mode", "3", "0x2000").0);
+    assert!(!base("nope", "1", "0x2000").0);
+    let (ok, _, err) = base("demo_mode", "eco", "0x2001");
+    assert!(!ok && err.contains("no definition"), "{err}");
+    assert!(!backups.exists(), "nothing may be backed up or written");
+}

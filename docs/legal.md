@@ -12,4 +12,6 @@ Contributors may:
 - contribute data they captured themselves from their own vehicles, with a `captured_on` provenance field;
 - write original descriptions of modules, DTCs and measuring blocks.
 
+BMW: OpenDiag will never bundle, commit or redistribute BMW proprietary data (PSdZData, CAFD files, SGBD/PRG files, ISTA content). Any future decoding of such files reads them from a path the user supplies on their own machine, and stays out of `data/` and the CC0 data set.
+
 If you have seen proprietary label data and are unsure whether your contribution is affected, say so in the PR and a maintainer will advise.

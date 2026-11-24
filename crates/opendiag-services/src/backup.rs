@@ -56,6 +56,16 @@ pub struct BackupRecord {
     /// `note`, which a later status change replaces. Absent in older records.
     #[serde(default)]
     pub module: Option<String>,
+    /// For `block_write` records: the data identifier of the block that was written.
+    #[serde(default)]
+    pub block: Option<u16>,
+    /// For `block_write` records: the whole block before the change, as hex.
+    /// This is what a restore puts back.
+    #[serde(default)]
+    pub old_hex: Option<String>,
+    /// For `block_write` records: the whole block as written, as hex.
+    #[serde(default)]
+    pub new_hex: Option<String>,
 }
 
 /// Add to `msg` that the backup record could not be updated, if updating it failed.
@@ -182,6 +192,9 @@ impl BackupStore {
             restores: new.restores,
             codes: Vec::new(),
             module: None,
+            block: None,
+            old_hex: None,
+            new_hex: None,
         };
         self.append(&rec)?;
         Ok(rec)
@@ -211,6 +224,45 @@ impl BackupStore {
             restores: None,
             codes,
             module: Some(module),
+            block: None,
+            old_hex: None,
+            new_hex: None,
+        };
+        self.append(&rec)?;
+        Ok(rec)
+    }
+
+    /// Record a whole-block change durably, status `planned`, *before* it is sent.
+    /// Holds the complete old block, so the change can be undone byte for byte.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_block(
+        &self,
+        protocol: &str,
+        module_address: u8,
+        module: String,
+        block: u16,
+        old: &[u8],
+        new: &[u8],
+        restores: Option<String>,
+    ) -> Result<BackupRecord> {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02X}")).collect::<String>();
+        let rec = BackupRecord {
+            id: self.next_id()?,
+            created_unix: Self::now_unix(),
+            protocol: protocol.to_string(),
+            module_address,
+            kind: "block_write".to_string(),
+            channel: 0,
+            old_value: 0,
+            new_value: 0,
+            status: BackupStatus::Planned,
+            note: None,
+            restores,
+            codes: Vec::new(),
+            module: Some(module),
+            block: Some(block),
+            old_hex: Some(hex(old)),
+            new_hex: Some(hex(new)),
         };
         self.append(&rec)?;
         Ok(rec)

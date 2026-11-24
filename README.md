@@ -12,6 +12,7 @@ An open source, cross-platform diagnostic suite for VAG group vehicles (VW, Audi
 | Transports | Serial K-line (Windows/Linux/macOS), SocketCAN (Linux), ELM327-style adapters (degraded, UDS over 11-bit CAN), Simulator, Replay |
 | Modules | `scan` and `dtc read/clear` work on KW1281 (`--slow-init`), KWP2000 on K-line (`--fast-init`) and KWP2000 over TP2.0 on CAN (`--can`, Linux); live data and adaptation are KW1281 only |
 | CLI | `scan`, `dtc read/clear`, `report` (standalone HTML), `serve` (read-only local web page), `doctor` (support summary), `log` (live data to CSV), `adaptation read/set`, `backup list/restore`, `probe`, `ports`, `capture`, `--trace` on all hardware commands, `data validate/schema` |
+| BMW (F-series, ENET) | **Experimental, simulator-tested only, never run on a real car.** `opendiag bmw discover/ident/did/scan/dtc/live`: HSFZ over TCP, UDP discovery, VIN / I-level / FA reads, ECU scan, fault codes (read, and guarded clear), raw DID logging, guarded raw block write/restore. Unverified protocol details are listed in [docs/bmw.md](docs/bmw.md) |
 | Data | Open YAML format with validator and generated JSON Schema (CC0-1.0) |
 
 ## Install

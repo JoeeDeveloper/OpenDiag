@@ -6,6 +6,8 @@ members = [
     "crates/opendiag-proto",
     "crates/opendiag-services",
     "crates/opendiag-data",
+    "crates/opendiag-bmw",
+    "crates/opendiag-bmw-coding",
     "crates/opendiag-cli",
     "crates/opendiag-web",
 ]

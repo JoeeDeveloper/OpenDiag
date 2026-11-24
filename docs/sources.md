@@ -15,3 +15,8 @@ Every piece of protocol knowledge must be traceable to a public source listed he
 | ELM327 AT commands | ELM327 data sheet (ELM Electronics), from general knowledge of the command set; **not re-read against the data sheet when written** | Commands used: ATZ, ATE0, ATL0, ATS0, ATH1, ATCAF0, ATSP6, ATST, ATCRA, ATSH; the `>` prompt, `NO DATA` and the error lines. The software emulator in `opendiag-transport` encodes this same reading, so it cannot catch a shared mistake. |
 
 Do not cite or derive from Ross-Tech label files, VCDS or ODIS.
+
+## BMW HSFZ (ENET)
+
+- Scapy `scapy/contrib/automotive/bmw/hsfz.py` (GPL-2.0-only): frame layout, control words, ports. Read for protocol facts only; no code copied.
+- Quantex "ELM327 BMW HSFZ" page (quantexlab.com/en/develop/elm327_hsfz.html): ports, 1-byte addressing, default tester `F4`, discovery by UDP broadcast, no routing activation.
