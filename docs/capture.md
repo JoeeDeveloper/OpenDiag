@@ -62,3 +62,5 @@ That fixture is **synthetic**, recorded from the built-in virtual module. A trac
 vehicle drops into the same test: copy it to `tests/fixtures/`, add a test that runs the client against it,
 and the real behaviour becomes a permanent regression check. Contributed traces must follow the rules in
 [legal.md](legal.md): only your own vehicle, and nothing derived from proprietary tools.
+
+To run the CLI against a recording with no hardware, see [replay.md](replay.md).

@@ -8,6 +8,7 @@ mod simulator;
 #[cfg(target_os = "linux")]
 mod socketcan_driver;
 mod trace;
+mod trace_ecu;
 
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ pub use trace::{
     format_frame, parse_trace, TraceEntry, TraceEvent, TraceReplay, TraceStatus, Tracing,
     TRACE_HEADER,
 };
+pub use trace_ecu::TraceEcu;
 
 /// A unit of data on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
