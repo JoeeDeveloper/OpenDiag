@@ -20,6 +20,9 @@ pub struct KwpSim {
     keywords: (u8, u8),
     ident: Vec<u8>,
     faults: Vec<(u16, u8)>,
+    /// ReadDataByLocalIdentifier (0x21) data by id; the last byte changes on every read.
+    local_data: Vec<(u8, Vec<u8>)>,
+    local_reads: u8,
     echo: bool,
 
     parser: Parser,
@@ -46,6 +49,8 @@ impl KwpSim {
             keywords: (0xEF, 0x8F),
             ident: Vec::new(),
             faults: Vec::new(),
+            local_data: Vec::new(),
+            local_reads: 0,
             echo: true,
             parser: Parser::new(),
             inbox: VecDeque::new(),
@@ -74,6 +79,13 @@ impl KwpSim {
     /// Data returned for ReadECUIdentification option 0x9B.
     pub fn ident(mut self, data: &[u8]) -> Self {
         self.ident = data.to_vec();
+        self
+    }
+
+    /// Data returned for ReadDataByLocalIdentifier `id`. To look alive, the last byte is
+    /// increased by one for every read of any local identifier (wrapping).
+    pub fn local_data(mut self, id: u8, data: &[u8]) -> Self {
+        self.local_data.push((id, data.to_vec()));
         self
     }
 
@@ -159,6 +171,22 @@ impl KwpSim {
                 self.reply(r);
             }
             0x1A => self.negative(sid, 0x12),
+            0x21 => {
+                let id = arg(1);
+                match self.local_data.iter().find(|(i, _)| *i == id) {
+                    Some((_, data)) => {
+                        let mut r = vec![0x61, id];
+                        r.extend_from_slice(data);
+                        if let Some(last) = r.last_mut().filter(|_| !data.is_empty()) {
+                            *last = last.wrapping_add(self.local_reads);
+                        }
+                        self.local_reads = self.local_reads.wrapping_add(1);
+                        self.reply(r);
+                    }
+                    // requestOutOfRange
+                    None => self.negative(sid, 0x31),
+                }
+            }
             0x18 => {
                 let mut r = vec![0x58, self.faults.len() as u8];
                 for &(code, status) in &self.faults {

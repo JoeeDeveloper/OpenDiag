@@ -47,12 +47,54 @@ fn io_err(e: std::io::Error) -> Error {
     Error::Io(e.to_string())
 }
 
+/// Run `round` on a fixed time grid until `limit`; `round` gets the logged time in ms and
+/// returns how many rows it wrote.
+///
+/// Rounds start on a grid (`interval` apart) so timestamps do not drift. If a round takes
+/// longer than the interval, the missed rounds are skipped rather than fired back to back.
+pub(crate) fn run_rounds<C: Clock>(
+    clock: &C,
+    interval: Duration,
+    limit: Limit,
+    mut round: impl FnMut(u128) -> Result<u64>,
+) -> Result<LogSummary> {
+    if interval.is_zero() {
+        return Err(Error::Protocol(
+            "live data: interval must be above zero".into(),
+        ));
+    }
+    let start = clock.now();
+    let mut summary = LogSummary {
+        samples: 0,
+        rows: 0,
+    };
+    let mut tick: u32 = 0;
+    // A schedule too far out to represent is the end of any real log.
+    while let Some(scheduled) = interval.checked_mul(tick) {
+        match limit {
+            Limit::Samples(n) if summary.samples >= n => break,
+            Limit::Duration(d) if scheduled >= d => break,
+            _ => {}
+        }
+        clock.wait_until(start + scheduled);
+        let time_ms = (clock.now() - start).as_millis();
+        summary.rows += round(time_ms)?;
+        summary.samples += 1;
+
+        // Next grid point after "now"; never fire missed rounds back to back.
+        let elapsed = clock.now() - start;
+        let after_now = u32::try_from(elapsed.as_nanos() / interval.as_nanos())
+            .unwrap_or(u32::MAX)
+            .saturating_add(1);
+        tick = tick.saturating_add(1).max(after_now);
+    }
+    Ok(summary)
+}
+
 /// Log `cfg.groups` from `source` to `out` as CSV at a fixed rate.
 ///
-/// Rounds start on a fixed grid (`interval` apart) so timestamps do not drift.
-/// If reading takes longer than the interval, the missed rounds are skipped
-/// rather than fired back to back. Output is flushed after every round, so a
-/// failure part-way through still leaves the earlier rows in the file.
+/// Output is flushed after every round, so a failure part-way through still leaves the
+/// earlier rows in the file.
 pub fn log_csv<L, C, W>(
     source: &mut L,
     clock: &C,
@@ -73,23 +115,8 @@ where
         ));
     }
     writeln!(out, "{CSV_HEADER}").map_err(io_err)?;
-
-    let start = clock.now();
-    let mut summary = LogSummary {
-        samples: 0,
-        rows: 0,
-    };
-    let mut tick: u32 = 0;
-    // A schedule too far out to represent is the end of any real log.
-    while let Some(scheduled) = cfg.interval.checked_mul(tick) {
-        match cfg.limit {
-            Limit::Samples(n) if summary.samples >= n => break,
-            Limit::Duration(d) if scheduled >= d => break,
-            _ => {}
-        }
-        clock.wait_until(start + scheduled);
-        let time_ms = (clock.now() - start).as_millis();
-
+    run_rounds(clock, cfg.interval, cfg.limit, |time_ms| {
+        let mut rows = 0;
         for &group in &cfg.groups {
             let cells = source.read_group(group)?;
             for (i, c) in cells.iter().enumerate() {
@@ -102,18 +129,10 @@ where
                     c.b
                 )
                 .map_err(io_err)?;
-                summary.rows += 1;
+                rows += 1;
             }
         }
         out.flush().map_err(io_err)?;
-        summary.samples += 1;
-
-        // Next grid point after "now"; never fire missed rounds back to back.
-        let elapsed = clock.now() - start;
-        let after_now = u32::try_from(elapsed.as_nanos() / cfg.interval.as_nanos())
-            .unwrap_or(u32::MAX)
-            .saturating_add(1);
-        tick = tick.saturating_add(1).max(after_now);
-    }
-    Ok(summary)
+        Ok(rows)
+    })
 }

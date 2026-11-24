@@ -537,7 +537,7 @@ fn kwp2000_trace_starts_with_the_fast_init_wakeup() {
 }
 
 #[test]
-fn kwp2000_has_no_live_data_or_adaptation_yet() {
+fn kwp2000_has_no_measuring_block_groups_or_adaptation() {
     let (ok, _, err) = run(&["log", "--simulate-kwp", "--groups", "1"], "");
     assert!(!ok && err.contains("only available for KW1281"), "{err}");
     let (ok, _, err) = run(
@@ -1755,4 +1755,82 @@ fn a_replayed_report_says_so() {
     assert!(ok, "{err}");
     assert!(html.contains("REPLAYED DATA"), "{html}");
     assert!(!html.contains("SIMULATED DATA"), "{html}");
+}
+
+// ---- log --ids: raw bytes by identifier over KWP2000 and UDS ----
+
+#[test]
+fn log_ids_writes_raw_hex_for_kwp2000_and_uds() {
+    let (ok, out, err) = run(
+        &[
+            "log",
+            "--simulate-kwp",
+            "--ids",
+            "0x01,0x02",
+            "--samples",
+            "2",
+            "--interval-ms",
+            "10",
+        ],
+        "",
+    );
+    assert!(ok, "{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "time_ms,id,length,hex");
+    assert_eq!(lines.len(), 5, "{out}");
+    assert!(lines[1].starts_with("0,0x0001,4,1020300"), "{out}");
+
+    let (ok, out, err) = run(
+        &["log", "--simulate", "--ids", "0xF190", "--samples", "1"],
+        "",
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("0,0xF190,17,44454D4F"), "{out}");
+}
+
+#[test]
+fn log_ids_is_refused_for_kw1281_and_needs_groups_or_ids_but_not_both() {
+    let (ok, _, err) = run(&["log", "--simulate-kw1281", "--ids", "0x01"], "");
+    assert!(!ok && err.contains("KW1281 modules use --groups"), "{err}");
+    let (ok, _, err) = run(&["log", "--simulate-kwp"], "");
+    assert!(!ok && err.contains("--groups"), "{err}");
+    let (ok, _, err) = run(
+        &["log", "--simulate-kwp", "--groups", "1", "--ids", "1"],
+        "",
+    );
+    assert!(!ok && err.contains("cannot be used with"), "{err}");
+    let (ok, _, err) = run(&["log", "--simulate-kwp", "--ids", "0xZZ"], "");
+    assert!(!ok && err.contains("not a hex identifier"), "{err}");
+}
+
+#[test]
+fn log_ids_can_be_replayed_from_a_recording() {
+    assert_replay_matches(
+        &[
+            "log",
+            "--ids",
+            "0x01,0x02",
+            "--samples",
+            "3",
+            "--interval-ms",
+            "10",
+        ],
+        "--simulate-kwp",
+        &["--fast-init"],
+        "kwp-raw-log",
+    );
+    assert_replay_matches(
+        &[
+            "log",
+            "--ids",
+            "0xF190",
+            "--samples",
+            "2",
+            "--interval-ms",
+            "10",
+        ],
+        "--simulate",
+        &[],
+        "uds-raw-log",
+    );
 }

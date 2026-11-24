@@ -19,6 +19,9 @@ pub fn virtual_kwp_bus() -> KwpSim {
         .ident(b"VIRTUAL KWP2000 ECU")
         .fault(12345, 0x20)
         .fault(54321, 0x01)
+        // Made-up raw data for the local identifiers 0x01 and 0x02.
+        .local_data(0x01, &[0x10, 0x20, 0x30, 0x00])
+        .local_data(0x02, &[0x00, 0x64])
 }
 
 /// The virtual KWP2000 module with its session open.

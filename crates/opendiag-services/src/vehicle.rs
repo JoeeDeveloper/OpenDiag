@@ -12,7 +12,9 @@
 
 use opendiag_core::{Error, Result};
 
-use crate::{AdaptationAccess, DtcReport, FaultAccess, Ident, LiveData, Module, WriteToken};
+use crate::{
+    AdaptationAccess, DtcReport, FaultAccess, Ident, LiveData, Module, RawData, WriteToken,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Brand {
@@ -197,6 +199,10 @@ impl Module for VehicleModule {
 
     fn live(&mut self) -> Option<&mut dyn LiveData> {
         self.vehicle.ecu(self.id).ok()?.live()
+    }
+
+    fn raw_data(&mut self) -> Option<&mut dyn RawData> {
+        self.vehicle.ecu(self.id).ok()?.raw_data()
     }
 
     fn adaptation(&mut self) -> Option<&mut dyn AdaptationAccess> {

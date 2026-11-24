@@ -20,3 +20,8 @@ Do not cite or derive from Ross-Tech label files, VCDS or ODIS.
 
 - Scapy `scapy/contrib/automotive/bmw/hsfz.py` (GPL-2.0-only): frame layout, control words, ports. Read for protocol facts only; no code copied.
 - Quantex "ELM327 BMW HSFZ" page (quantexlab.com/en/develop/elm327_hsfz.html): ports, 1-byte addressing, default tester `F4`, discovery by UDP broadcast, no routing activation.
+
+## Raw data by identifier over KWP2000 and UDS (`log --ids`)
+
+- ISO 14230-3 (ReadDataByLocalIdentifier 0x21) and ISO 14229 (ReadDataByIdentifier 0x22): the request/response structure only.
+- Searched 2026-11-24 for a public description of how VAG modules lay out measuring-block bytes in an 0x21 response. Found only an unverified community snippet (jazdw-software group, one display type) and a note in PyVCDS that "block" is a KWP1281 holdover; nothing authoritative for the (display type, a, b) layout over KWP2000. Therefore **the returned bytes are logged raw and never decoded**. Add the source here, and a decoder to the open data format, when one exists or a real capture confirms it.
