@@ -11,6 +11,7 @@ pub mod fault_clear;
 mod kw1281_module;
 mod kwp_module;
 pub mod live;
+pub mod raw_data;
 pub mod report;
 pub mod vehicle;
 
@@ -27,6 +28,7 @@ pub use fault_clear::{apply_clear, plan_clear, ClearConfirmation, ClearOutcome, 
 pub use kw1281_module::Kw1281Module;
 pub use kwp_module::KwpModule;
 pub use live::{log_csv, Limit, LiveData, LogConfig, LogSummary, CSV_HEADER};
+pub use raw_data::{log_raw_csv, RawData, RawLogConfig, RAW_CSV_HEADER};
 pub use report::{escape_html, format_unix_utc, render_html, Report, ReportFault};
 pub use vehicle::{
     Brand, EcuEntry, EcuId, IdentLine, SingleModule, Vehicle, VehicleIdent, VehicleModule,
@@ -149,6 +151,11 @@ pub trait Module {
         None
     }
 
+    /// Raw bytes by identifier, if the protocol has it (KWP2000 and UDS).
+    fn raw_data(&mut self) -> Option<&mut dyn RawData> {
+        None
+    }
+
     /// Adaptation channels, if this kind of module has them (KW1281 only so far).
     fn adaptation(&mut self) -> Option<&mut dyn AdaptationAccess> {
         None
@@ -170,6 +177,20 @@ impl<L: MessageLink> Module for UdsClient<L> {
 
     fn keep_alive(&mut self) -> Result<()> {
         self.tester_present()
+    }
+
+    fn raw_data(&mut self) -> Option<&mut dyn RawData> {
+        Some(self)
+    }
+}
+
+impl<L: MessageLink> RawData for UdsClient<L> {
+    fn id_kind(&self) -> &'static str {
+        "data identifier (DID)"
+    }
+
+    fn read_raw(&mut self, id: u16) -> Result<Vec<u8>> {
+        self.read_data_by_identifier(id)
     }
 }
 

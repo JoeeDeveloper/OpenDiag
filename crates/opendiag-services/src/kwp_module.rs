@@ -9,7 +9,7 @@
 use opendiag_core::{Error, Result, WriteMode};
 use opendiag_proto::kwp::KwpService;
 
-use crate::{DtcReport, FaultAccess, Ident, Module, WriteToken};
+use crate::{DtcReport, FaultAccess, Ident, Module, RawData, WriteToken};
 
 /// Diagnostic session mode requested after connecting. It is the mode that
 /// appears in the public TP2.0 capture; not verified on K-line modules.
@@ -124,6 +124,25 @@ impl<S: KwpService> Module for KwpModule<S> {
 
     fn keep_alive(&mut self) -> Result<()> {
         self.service.tester_present()
+    }
+
+    fn raw_data(&mut self) -> Option<&mut dyn RawData> {
+        Some(self)
+    }
+}
+
+impl<S: KwpService> RawData for KwpModule<S> {
+    fn id_kind(&self) -> &'static str {
+        "local identifier"
+    }
+
+    fn read_raw(&mut self, id: u16) -> Result<Vec<u8>> {
+        let id = u8::try_from(id).map_err(|_| {
+            Error::Protocol(format!(
+                "{id:#06X} is not a KWP2000 local identifier (one byte, up to 0xFF)"
+            ))
+        })?;
+        self.service.read_data_by_local_identifier(id)
     }
 }
 

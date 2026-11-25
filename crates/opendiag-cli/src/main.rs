@@ -19,9 +19,10 @@ use opendiag_services::demo::{
     virtual_kwp_module_over, virtual_uds_client_over, TESTER_ID,
 };
 use opendiag_services::{
-    apply_change, apply_clear, apply_restore, format_unix_utc, log_csv, plan_change, plan_clear,
-    plan_restore, render_html, BackupStore, ClearConfirmation, DtcReport, Kw1281Module, KwpModule,
-    Limit, LogConfig, Module, Report, ReportFault, SingleModule, VehicleModule, WriteConfirmation,
+    apply_change, apply_clear, apply_restore, format_unix_utc, log_csv, log_raw_csv, plan_change,
+    plan_clear, plan_restore, render_html, BackupStore, ClearConfirmation, DtcReport, Kw1281Module,
+    KwpModule, Limit, LogConfig, Module, RawLogConfig, Report, ReportFault, SingleModule,
+    VehicleModule, WriteConfirmation,
 };
 use opendiag_transport::{
     list_serial_ports, open_can, Elm327, Elm327Emulator, Elm327Serial, KLineSerial, SerialIo,
@@ -79,13 +80,18 @@ enum Cmd {
         #[command(subcommand)]
         action: DataCmd,
     },
-    /// Log live measuring-block data to CSV (KW1281 modules). Values are raw cells.
+    /// Log live data to CSV. KW1281: measuring-block groups (`--groups`, raw cells).
+    /// KWP2000 and UDS: raw bytes by identifier (`--ids`), logged as hex and not interpreted.
     Log {
         #[command(flatten)]
         target: Target,
         /// Measuring-block groups to read each round, e.g. --groups 1,2.
-        #[arg(long, value_delimiter = ',', required = true)]
+        #[arg(long, value_delimiter = ',', required_unless_present = "ids")]
         groups: Vec<u8>,
+        /// Identifiers to read each round, in hex, e.g. --ids 0x01,0x02 (KWP2000 local
+        /// identifiers) or --ids 0xF190 (UDS data identifiers).
+        #[arg(long, value_delimiter = ',', value_parser = parse_hex_u16, conflicts_with = "groups")]
+        ids: Vec<u16>,
         /// Stop after this many rounds (default 20 if no limit is given).
         #[arg(long)]
         samples: Option<u32>,
@@ -173,6 +179,12 @@ enum Cmd {
 fn parse_hex_u8(s: &str) -> Result<u8, String> {
     let digits = s.trim_start_matches("0x").trim_start_matches("0X");
     u8::from_str_radix(digits, 16).map_err(|_| format!("`{s}` is not a hex byte (e.g. 0x01)"))
+}
+
+fn parse_hex_u16(s: &str) -> Result<u16, String> {
+    let digits = s.trim_start_matches("0x").trim_start_matches("0X");
+    u16::from_str_radix(digits, 16)
+        .map_err(|_| format!("`{s}` is not a hex identifier (e.g. 0x01 or 0xF190)"))
 }
 
 fn parse_hex_u32(s: &str) -> Result<u32, String> {
@@ -462,6 +474,7 @@ fn main() -> ExitCode {
         Some(Cmd::Log {
             target,
             groups,
+            ids,
             samples,
             duration_secs,
             interval_ms,
@@ -471,12 +484,22 @@ fn main() -> ExitCode {
                 Some(s) => Limit::Duration(Duration::from_secs(s)),
                 None => Limit::Samples(samples.unwrap_or(20)),
             };
-            let cfg = LogConfig {
-                groups,
-                interval: Duration::from_millis(interval_ms),
-                limit,
-            };
-            log_cmd(&target, &cfg, out.as_deref())
+            let interval = Duration::from_millis(interval_ms);
+            if ids.is_empty() {
+                let cfg = LogConfig {
+                    groups,
+                    interval,
+                    limit,
+                };
+                log_cmd(&target, &cfg, out.as_deref())
+            } else {
+                let cfg = RawLogConfig {
+                    ids,
+                    interval,
+                    limit,
+                };
+                log_raw_cmd(&target, &cfg, out.as_deref())
+            }
         }
         Some(Cmd::Report { target, out }) => report_cmd(&target, out.as_deref()),
         Some(Cmd::Serve {
@@ -1374,6 +1397,34 @@ fn log_cmd(target: &Target, cfg: &LogConfig, out: Option<&Path>) -> Result<(), S
             log_csv(live, &clock, cfg, &mut w).map_err(|e| e.to_string())?
         }
         None => log_csv(live, &clock, cfg, &mut io::stdout().lock()).map_err(|e| e.to_string())?,
+    };
+    eprintln!(
+        "Logged {} round(s), {} row(s){}.",
+        summary.samples,
+        summary.rows,
+        out.map(|p| format!(" to {}", p.display()))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+fn log_raw_cmd(target: &Target, cfg: &RawLogConfig, out: Option<&Path>) -> Result<(), String> {
+    let mut conn = connect(target)?;
+    let raw = conn.module.raw_data().ok_or(
+        "raw identifiers are only available over KWP2000 and UDS (use --ids with --fast-init, --can or a UDS connection); \
+         KW1281 modules use --groups",
+    )?;
+    let clock = SystemClock::new();
+    let summary = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+            let mut w = io::BufWriter::new(file);
+            log_raw_csv(raw, &clock, cfg, &mut w).map_err(|e| e.to_string())?
+        }
+        None => {
+            log_raw_csv(raw, &clock, cfg, &mut io::stdout().lock()).map_err(|e| e.to_string())?
+        }
     };
     eprintln!(
         "Logged {} round(s), {} row(s){}.",
