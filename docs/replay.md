@@ -58,3 +58,21 @@ recording, as long as each was recorded at least once. This is different from `T
 
 A trace holds whatever the vehicle reported (VIN, part numbers, fault history). Read the privacy note in
 [capture.md](capture.md) before sharing one.
+
+## BMW (HSFZ) sessions
+
+`opendiag bmw ... --record FILE` writes the raw HSFZ frames crossing the TCP connection to a trace
+(`TX raw ..` to the gateway, `RX raw ..` from it); `--replay FILE` runs any read-only `bmw` command
+(`ident`, `did`, `scan`, `dtc read`, `block read`, `coding show`, `live`, `serve`) against it with no
+network. `--record` also works with `--simulate`, which is how the test fixtures are made.
+
+```bash
+opendiag bmw ident --ip 192.168.0.10 --record car.trace
+opendiag bmw ident --replay car.trace
+```
+
+Same rules as the K-line replay: requests are matched by content, a request that was never
+recorded is an error naming it (nothing is invented), replies repeat the recorded bytes, timing is
+ignored, and writes (`dtc clear`, `block write/restore`, `coding set`) are refused. A recording holds
+one connection; to replay several commands, record each and concatenate the files. UDP discovery
+is not recorded: pass `--target` when replaying.

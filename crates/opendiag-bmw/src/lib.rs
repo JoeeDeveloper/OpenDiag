@@ -18,6 +18,7 @@ pub mod ident;
 pub mod live;
 pub mod mock;
 pub mod scan;
+pub mod trace;
 pub mod vehicle;
 
 pub use discovery::{broadcast_target, discover, Discovered};
@@ -26,4 +27,5 @@ pub use gateway::{ByteStream, HsfzGateway, HsfzLink, TcpByteStream};
 pub use ident::{read_did, read_ident, BmwIdent};
 pub use live::{log_dids_csv, DidLogConfig, DidLogSummary};
 pub use scan::{scan, ScanEntry};
+pub use trace::{RecordingStream, ReplayStream};
 pub use vehicle::BmwVehicle;

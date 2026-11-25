@@ -369,6 +369,7 @@ dependencies = [
  "opendiag-core",
  "opendiag-proto",
  "opendiag-services",
+ "opendiag-transport",
 ]
 
 [[package]]

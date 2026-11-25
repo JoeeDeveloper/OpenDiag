@@ -11,6 +11,7 @@ repository.workspace = true
 opendiag-core = { path = "../opendiag-core" }
 opendiag-proto = { path = "../opendiag-proto" }
 opendiag-services = { path = "../opendiag-services" }
+opendiag-transport = { path = "../opendiag-transport" }
 
 [lints]
 workspace = true
