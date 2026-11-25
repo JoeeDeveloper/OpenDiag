@@ -1834,3 +1834,69 @@ fn log_ids_can_be_replayed_from_a_recording() {
         "uds-raw-log",
     );
 }
+
+#[test]
+fn bmw_replay_reproduces_ident_scan_and_dtcs_without_a_network() {
+    let path = std::env::temp_dir().join(format!("opendiag-bmw-{}-all.trace", std::process::id()));
+    let p = path.to_str().unwrap();
+    // One recording holding several sessions: record each command in turn into its own file,
+    // then concatenate (the format is just lines).
+    let mut combined = String::from("# opendiag trace v1\n");
+    let mut expected = Vec::new();
+    for (i, cmd) in [
+        vec!["ident"],
+        vec!["scan"],
+        vec!["dtc", "read", "--target", "0x12"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let file =
+            std::env::temp_dir().join(format!("opendiag-bmw-{}-part{i}.trace", std::process::id()));
+        let mut args: Vec<&str> = vec!["bmw"];
+        args.extend(cmd.iter());
+        args.extend(["--simulate", "--record", file.to_str().unwrap()]);
+        let (ok, out, err) = run(&args, "");
+        assert!(ok, "{err}");
+        expected.push((cmd.clone(), out));
+        combined.push_str(&std::fs::read_to_string(&file).unwrap());
+    }
+    std::fs::write(&path, combined).unwrap();
+    for (cmd, want) in expected {
+        let mut args: Vec<&str> = vec!["bmw"];
+        args.extend(cmd.iter());
+        args.extend(["--replay", p]);
+        let (ok, out, err) = run(&args, "");
+        assert!(ok, "{cmd:?}: {err}");
+        assert_eq!(out, want, "{cmd:?}");
+        assert!(err.contains("[replay]"), "{err}");
+    }
+}
+
+#[test]
+fn bmw_replay_refuses_every_write_and_rejects_unrecorded_requests() {
+    let path = std::env::temp_dir().join(format!("opendiag-bmw-{}-w.trace", std::process::id()));
+    let p = path.to_str().unwrap();
+    let (ok, _, err) = run(&["bmw", "ident", "--simulate", "--record", p], "");
+    assert!(ok, "{err}");
+    for args in [
+        vec!["bmw", "dtc", "clear", "--replay", p],
+        vec![
+            "bmw", "block", "write", "--replay", p, "--did", "0x1234", "--hex", "00",
+        ],
+    ] {
+        let (ok, out, err) = run(&args, "yes\n");
+        assert!(!ok, "{args:?}: {out}");
+        assert!(err.contains("read-only"), "{err}");
+    }
+    let (ok, _, err) = run(&["bmw", "did", "--replay", p, "0xABCD"], "");
+    assert!(!ok);
+    assert!(err.contains("not in recording"), "{err}");
+}
+
+#[test]
+fn bmw_replay_conflicts_with_a_live_connection() {
+    let (ok, _, err) = run(&["bmw", "ident", "--replay", "x.trace", "--simulate"], "");
+    assert!(!ok);
+    assert!(err.contains("cannot be used with"), "{err}");
+}

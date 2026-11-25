@@ -9,9 +9,10 @@ use opendiag_bmw::ecus;
 use opendiag_bmw::hsfz::{DEFAULT_GATEWAY, TCP_PORT};
 use opendiag_bmw::mock::{MockGateway, VirtualVehicle};
 use opendiag_bmw::BmwVehicle;
+use opendiag_bmw::ByteStream;
 use opendiag_bmw::{
     broadcast_target, discover, log_dids_csv, read_did, scan, BmwEcu, DidLogConfig, Discovered,
-    HsfzGateway, HsfzLink, TcpByteStream,
+    HsfzGateway, HsfzLink, RecordingStream, ReplayStream, TcpByteStream,
 };
 use opendiag_bmw_coding::{decode, encode_change, CodingSource, SyntheticSource};
 use opendiag_proto::clock::SystemClock;
@@ -204,8 +205,15 @@ pub struct Conn {
     #[arg(long, default_value_t = TCP_PORT)]
     port: u16,
     /// Use the built-in virtual BMW (no car needed).
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["ip", "replay"])]
     simulate: bool,
+    /// Run against a recorded HSFZ session instead of a car (read-only, no network). Make one
+    /// with `--record`.
+    #[arg(long, conflicts_with_all = ["ip", "simulate", "record"])]
+    replay: Option<std::path::PathBuf>,
+    /// Record this session's HSFZ traffic to a trace file, for `--replay` later.
+    #[arg(long, conflicts_with_all = ["replay"])]
+    record: Option<std::path::PathBuf>,
     /// Diagnostic address of the ECU to talk to, in hex (default: the gateway).
     #[arg(long, value_parser = crate::parse_hex_u8)]
     target: Option<u8>,
@@ -221,6 +229,8 @@ impl Conn {
             ip: None,
             port: TCP_PORT,
             simulate,
+            replay: None,
+            record: None,
             target: None,
             tester: opendiag_bmw::hsfz::DEFAULT_TESTER,
         }
@@ -236,7 +246,10 @@ pub fn count_gateways() -> usize {
 fn serve_cmd(c: &Conn, listen_port: u16) -> Result<(), String> {
     let s = connect(c)?;
     let simulated = c.simulate;
-    let connection = if simulated {
+    let replay = c.replay.is_some();
+    let connection = if let Some(path) = &c.replay {
+        format!("Replay of recorded BMW session {}", path.display())
+    } else if simulated {
         "Simulated: built-in virtual BMW (HSFZ)".to_string()
     } else {
         format!(
@@ -248,7 +261,7 @@ fn serve_cmd(c: &Conn, listen_port: u16) -> Result<(), String> {
     let (v, _mock) = vehicle_of(s);
     let id = v.default_ecu();
     let module = VehicleModule::new(Box::new(v), id).map_err(|e| e.to_string())?;
-    crate::serve_module(Box::new(module), connection, simulated, false, listen_port)
+    crate::serve_module(Box::new(module), connection, simulated, replay, listen_port)
 }
 
 fn parse_hex_u16(s: &str) -> Result<u16, String> {
@@ -337,12 +350,26 @@ fn discover_cmd(to: Option<SocketAddr>, wait_ms: u64, simulate: bool) -> Result<
 }
 
 struct Session {
-    gateway: HsfzGateway<TcpByteStream, SystemClock>,
+    gateway: HsfzGateway<Box<dyn ByteStream>, SystemClock>,
     target: u8,
     _mock: Option<MockGateway>,
 }
 
 fn connect(c: &Conn) -> Result<Session, String> {
+    if let Some(path) = &c.replay {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let stream = ReplayStream::from_text(&text).map_err(|e| e.to_string())?;
+        eprintln!(
+            "[replay] recorded session {}: answers only what was captured",
+            path.display()
+        );
+        return Ok(Session {
+            gateway: HsfzGateway::new(Box::new(stream), SystemClock::new(), c.tester),
+            target: c.target.unwrap_or(DEFAULT_GATEWAY),
+            _mock: None,
+        });
+    }
     let mut discovered_addr = None;
     let (addr, mock) = if c.simulate {
         eprintln!("[simulated] virtual BMW gateway");
@@ -371,12 +398,33 @@ fn connect(c: &Conn) -> Result<Session, String> {
         };
         (SocketAddr::new(ip, c.port), None)
     };
-    let stream = TcpByteStream::connect(addr).map_err(|e| e.to_string())?;
+    let tcp = TcpByteStream::connect(addr).map_err(|e| e.to_string())?;
+    let stream: Box<dyn ByteStream> = match &c.record {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+            eprintln!("Recording HSFZ traffic to {}", path.display());
+            Box::new(
+                RecordingStream::new(tcp, std::io::BufWriter::new(file))
+                    .map_err(|e| e.to_string())?,
+            )
+        }
+        None => Box::new(tcp),
+    };
     Ok(Session {
         gateway: HsfzGateway::new(stream, SystemClock::new(), c.tester),
         target: c.target.or(discovered_addr).unwrap_or(DEFAULT_GATEWAY),
         _mock: mock,
     })
+}
+
+/// Writes never run against a recording: it cannot be a car, and a write that "succeeds"
+/// there proves nothing.
+fn connect_for_write(c: &Conn) -> Result<Session, String> {
+    if c.replay.is_some() {
+        return Err("a replayed session is read-only: writes are refused".into());
+    }
+    connect(c)
 }
 
 fn hex(b: &[u8]) -> String {
@@ -386,7 +434,12 @@ fn hex(b: &[u8]) -> String {
         .join(" ")
 }
 
-fn vehicle_of(s: Session) -> (BmwVehicle<TcpByteStream, SystemClock>, Option<MockGateway>) {
+fn vehicle_of(
+    s: Session,
+) -> (
+    BmwVehicle<Box<dyn ByteStream>, SystemClock>,
+    Option<MockGateway>,
+) {
     let Session {
         gateway,
         target,
@@ -495,7 +548,7 @@ fn print_vehicle_scan(found: &[EcuEntry]) -> Result<(), String> {
     Ok(())
 }
 
-type CliEcu = BmwEcu<HsfzLink<TcpByteStream, SystemClock>>;
+type CliEcu = BmwEcu<HsfzLink<Box<dyn ByteStream>, SystemClock>>;
 
 fn ecu_of(s: &Session) -> CliEcu {
     BmwEcu::new(s.gateway.link(s.target), s.target, UdsConfig::default())
@@ -528,7 +581,7 @@ fn dtc_read_cmd(c: &Conn) -> Result<(), String> {
 
 fn dtc_clear_cmd(c: &Conn, store: &StoreArg) -> Result<(), String> {
     let store = backup_store(store);
-    let s = connect(c)?;
+    let s = connect_for_write(c)?;
     let mut ecu = ecu_of(&s);
     let shown = plan_clear(ecu.faults()).map_err(|e| e.to_string())?;
     if shown.is_empty() {
@@ -607,8 +660,12 @@ fn live_cmd(
     Ok(())
 }
 
-fn block_ecu(bc: &BlockConn) -> Result<(CliEcu, Session), String> {
-    let s = connect(&bc.conn)?;
+fn block_ecu(bc: &BlockConn, write: bool) -> Result<(CliEcu, Session), String> {
+    let s = if write {
+        connect_for_write(&bc.conn)?
+    } else {
+        connect(&bc.conn)?
+    };
     let mut ecu = ecu_of(&s);
     if bc.extended_session {
         ecu = ecu.with_extended_session();
@@ -623,7 +680,7 @@ fn hex_str(b: &[u8]) -> String {
 fn block_cmd(action: BmwBlock) -> Result<(), String> {
     match action {
         BmwBlock::Read { bc, did } => {
-            let (mut ecu, s) = block_ecu(&bc)?;
+            let (mut ecu, s) = block_ecu(&bc, false)?;
             let b = ecu.read_block(did).map_err(|e| e.to_string())?;
             println!(
                 "ECU {:#04X} block {did:#06X} ({} bytes): {}",
@@ -640,7 +697,7 @@ fn block_cmd(action: BmwBlock) -> Result<(), String> {
             store,
         } => {
             let new = unhex(hex.trim()).ok_or("--hex must be an even number of hex digits")?;
-            let (mut ecu, s) = block_ecu(&bc)?;
+            let (mut ecu, s) = block_ecu(&bc, true)?;
             let change = plan_block_change(&mut ecu, did, new).map_err(|e| e.to_string())?;
             block_apply(
                 &mut ecu,
@@ -652,7 +709,7 @@ fn block_cmd(action: BmwBlock) -> Result<(), String> {
         }
         BmwBlock::Restore { bc, id, store } => {
             let store = backup_store(&store);
-            let (mut ecu, s) = block_ecu(&bc)?;
+            let (mut ecu, s) = block_ecu(&bc, true)?;
             let change = plan_block_restore(&mut ecu, &store, &id).map_err(|e| e.to_string())?;
             block_apply(&mut ecu, &s, &store, &change, bc.conn.simulate)
         }
@@ -725,12 +782,13 @@ fn show_fields(fields: &[opendiag_bmw_coding::DecodedField]) {
 /// stable and nothing is decoded.
 fn coding_context(
     a: &CodingArgs,
+    write: bool,
 ) -> Result<(CliEcu, Session, opendiag_bmw_coding::BlockLayout, Vec<u8>), String> {
     let text = std::fs::read_to_string(&a.coding_file)
         .map_err(|e| format!("cannot read {}: {e}", a.coding_file.display()))?;
     let source = SyntheticSource::from_json(&text).map_err(|e| e.to_string())?;
     eprintln!("Definitions: {}", source.provenance);
-    let (mut ecu, s) = block_ecu(&a.bc)?;
+    let (mut ecu, s) = block_ecu(&a.bc, write)?;
     let layout = source
         .layout(s.target, a.i_level.as_deref(), a.did)
         .map_err(|e| e.to_string())?
@@ -746,7 +804,7 @@ fn coding_context(
 fn coding_cmd(action: BmwCoding) -> Result<(), String> {
     match action {
         BmwCoding::Show(a) => {
-            let (_, s, layout, block) = coding_context(&a)?;
+            let (_, s, layout, block) = coding_context(&a, false)?;
             println!(
                 "ECU {:#04X} block {:#06X}: {}",
                 s.target,
@@ -762,7 +820,7 @@ fn coding_cmd(action: BmwCoding) -> Result<(), String> {
             value,
             store,
         } => {
-            let (mut ecu, s, layout, block) = coding_context(&args)?;
+            let (mut ecu, s, layout, block) = coding_context(&args, true)?;
             let new = encode_change(&layout, &block, &field, &value).map_err(|e| e.to_string())?;
             let before = decode(&layout, &block).map_err(|e| e.to_string())?;
             let after = decode(&layout, &new).map_err(|e| e.to_string())?;
